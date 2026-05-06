@@ -1,0 +1,74 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: astragrid-linux-x64
+            binary: target/release/astragrid
+          - os: windows-latest
+            artifact: astragrid-windows-x64.exe
+            binary: target/release/astragrid.exe
+          - os: macos-latest
+            artifact: astragrid-macos-arm64
+            binary: target/release/astragrid
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --workspace --release --locked
+
+      - name: Generate binary provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq "astragrid" } |
+            Select-Object -First 1 -ExpandProperty version
+          $binary = "${{ matrix.binary }}"
+          $provenance = [ordered]@{
+            schema = 1
+            package = "astragrid"
+            version = $version
+            target = "${{ matrix.artifact }}"
+            generated_at = (Get-Date).ToUniversalTime().ToString("o")
+            binary = [ordered]@{
+              path = "../$binary"
+              sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary).Hash.ToLowerInvariant()
+            }
+            toolchain = [ordered]@{
+              cargo = (cargo --version)
+              rustc = (rustc --version)
+            }
+            git = [ordered]@{
+              commit = "${{ github.sha }}"
+              ref = "${{ github.ref }}"
+            }
+          }
+          $provenance | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "dist/${{ matrix.artifact }}.provenance.json" -Encoding UTF8
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.binary }}
+            dist/${{ matrix.artifact }}.provenance.json

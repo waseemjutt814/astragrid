@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/astragrid-cli",
+    "crates/astragrid-approvals",
+    "crates/astragrid-core",
+    "crates/astragrid-crypto",
+    "crates/astragrid-dashboard",
+    "crates/astragrid-doctor",
+    "crates/astragrid-evidence",
+    "crates/astragrid-geo",
+    "crates/astragrid-harvest",
+    "crates/astragrid-map",
+    "crates/astragrid-net",
+    "crates/astragrid-oskey",
+    "crates/astragrid-provenance",
+    "crates/astragrid-recommend",
+    "crates/astragrid-report",
+    "crates/astragrid-scenario",
+    "crates/astragrid-state",
+    "crates/astragrid-store",
+    "crates/astragrid-supervisor",
+    "crates/astragrid-sync",
+    "crates/astragrid-sync-queue",
+    "crates/astragrid-workflow",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "Apache-2.0"
+description = "Offline-first mission control kernel for evidence-led crisis operations."
+
+[workspace.dependencies]
+anyhow = "1"
+argon2 = "0.5"
+blake3 = "1"
+chacha20poly1305 = "0.10"
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+geojson = "0.24"
+hex = "0.4"
+percent-encoding = "2"
+rand_core = { version = "0.6", features = ["getrandom"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
+uuid = { version = "1", features = ["serde", "v7"] }
+windows-sys = "0.61"
+zeroize = "1"

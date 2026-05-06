@@ -1,0 +1,42 @@
+[package]
+name = "astragrid"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "astragrid"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+astragrid-approvals = { path = "../astragrid-approvals" }
+astragrid-core = { path = "../astragrid-core" }
+astragrid-crypto = { path = "../astragrid-crypto" }
+astragrid-dashboard = { path = "../astragrid-dashboard" }
+astragrid-doctor = { path = "../astragrid-doctor" }
+astragrid-evidence = { path = "../astragrid-evidence" }
+astragrid-geo = { path = "../astragrid-geo" }
+astragrid-harvest = { path = "../astragrid-harvest" }
+astragrid-map = { path = "../astragrid-map" }
+astragrid-net = { path = "../astragrid-net" }
+astragrid-oskey = { path = "../astragrid-oskey" }
+astragrid-provenance = { path = "../astragrid-provenance" }
+astragrid-recommend = { path = "../astragrid-recommend" }
+astragrid-report = { path = "../astragrid-report" }
+astragrid-scenario = { path = "../astragrid-scenario" }
+astragrid-state = { path = "../astragrid-state" }
+astragrid-store = { path = "../astragrid-store" }
+astragrid-supervisor = { path = "../astragrid-supervisor" }
+astragrid-sync = { path = "../astragrid-sync" }
+astragrid-sync-queue = { path = "../astragrid-sync-queue" }
+astragrid-workflow = { path = "../astragrid-workflow" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

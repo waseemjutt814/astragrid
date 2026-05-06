@@ -1,0 +1,110 @@
+# AstraGrid
+
+AstraGrid is an offline-first mission control kernel for evidence-led crisis operations.
+
+The current foundation is executable: an append-only mission ledger, hash-chain verification,
+encrypted local signing identities, trusted operator registry, SQLite indexing, GeoJSON feature
+ingestion, evidence bundles, authenticated peer snapshots, offline sync planning, encrypted
+artifact sealing, materialized mission state, report export, packaging scripts, approval-gated
+workflow execution, executable acceptance scenarios, operator dashboard export, workspace doctor,
+admission policy checks,
+evidence-to-command workflow drafting, and a CLI.
+
+## What Exists Now
+
+- Rust workspace with `astragrid-core` and `astragrid` CLI.
+- JSON Lines mission ledger with BLAKE3 hash chaining.
+- Policy gate for mission actions and roles.
+- Local Ed25519 operator identities and signed command append.
+- Argon2id + XChaCha20-Poly1305 encrypted operator key files.
+- OS-sealed passphrase envelopes for supported local providers.
+- Operator key audit for encryption state and local permission signals.
+- Trusted operator registry with enrollment and revocation checks.
+- SQLite mission index with idempotent verified-ledger ingest, query, import, and export.
+- Materialized mission state summaries derived from verified ledger events.
+- GeoJSON feature ingestion with bounding boxes and content digests.
+- Self-contained HTML/SVG map export from feature records.
+- Self-contained browser map console with mission state overlays.
+- Evidence bundles with cited evidence ids, confidence checks, and bundle hashes.
+- Deterministic recommendation rules that emit verified evidence bundles.
+- Structured model recommendation adapter that only emits verified evidence bundles.
+- Authenticated one-shot TCP peer ledger snapshots.
+- Multi-peer sync planning from a peer manifest.
+- Durable SQLite peer sync queue with retries and append-only apply.
+- Finite-cycle or daemon-mode peer queue worker.
+- Offline ledger comparison, append-only delta apply, and divergence detection.
+- Encrypted artifact sealing for ledgers, exports, and reports.
+- Source profiles with cache and retry metadata for remote harvesting.
+- Markdown and JSON incident report bundle export.
+- Evidence-to-command workflow drafts gated by state and policy.
+- Hash-chained approval queue for ready workflow drafts.
+- Approved draft execution through signed, registry-checked ledger append.
+- JSON scenario runner for mission acceptance tests with ledger, state, and store assertions.
+- Self-contained operator dashboard export with peer health status, recent errors, and map links.
+- Workspace doctor for ledger, state, store, key, approval, and peer queue checks.
+- Payload size limit and deterministic payload hashing.
+- Release provenance verification with fail-closed SHA-256 checks for packaged artifacts.
+- Optional operator-signed provenance envelopes for release custody.
+- Multi-signature provenance quorum verification with distinct signer thresholds.
+- Deterministic supervisor artifact generation for peer queue workers.
+- Peer queue health telemetry snapshots.
+- `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
+- GitHub Actions CI for formatting, linting, tests, build, and docs.
+- Release packaging emits SHA-256 provenance JSON.
+
+## Quick Start
+
+```powershell
+cargo build
+cargo test
+cargo run -p astragrid -- init --mission flood-watch --ledger data/mission.agl
+'strong local passphrase' | Set-Content -Encoding UTF8 data/operators/lead.pass
+cargo run -p astragrid -- identity create --path data/operators/lead.agkey --name lead --role incident_commander --passphrase-file data/operators/lead.pass
+cargo run -p astragrid -- identity registry-init --registry data/operators/operators.agregistry --authority local-command
+cargo run -p astragrid -- identity enroll --registry data/operators/operators.agregistry --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --issued-by local-command
+'{ "water_level_m": 5.2 }' | Set-Content -Encoding UTF8 data/river-east.json
+cargo run -p astragrid -- append-signed --ledger data/mission.agl --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --registry data/operators/operators.agregistry --action declare_incident --subject river-east --priority critical --payload '@data/river-east.json'
+cargo run -p astragrid -- verify --ledger data/mission.agl
+cargo run -p astragrid -- store ingest --ledger data/mission.agl --db data/mission.db
+cargo run -p astragrid -- store summary --db data/mission.db
+```
+
+## Design Standard
+
+AstraGrid is built around four non-negotiables:
+
+1. Every operational decision must be replayable.
+2. Every AI or automation layer must cite evidence and uncertainty.
+3. Every command path must have policy, audit, and failure behavior.
+4. Offline mode is a first-class runtime mode, not a demo fallback.
+
+## Repository Map
+
+- `crates/astragrid-core`: mission event types, policy, and ledger implementation.
+- `crates/astragrid-approvals`: hash-chained workflow approval queue.
+- `crates/astragrid-cli`: operator-facing CLI for local mission ledgers.
+- `crates/astragrid-dashboard`: self-contained operator dashboard export.
+- `crates/astragrid-doctor`: local workspace health checks.
+- `crates/astragrid-evidence`: evidence bundle validation and hashing.
+- `crates/astragrid-geo`: GeoJSON feature parsing and digesting.
+- `crates/astragrid-harvest`: remote GeoJSON/OGC feature harvesting.
+- `crates/astragrid-map`: self-contained HTML/SVG feature map export.
+- `crates/astragrid-net`: authenticated peer ledger snapshots.
+- `crates/astragrid-oskey`: OS-sealed local secret envelopes.
+- `crates/astragrid-provenance`: release provenance verification.
+- `crates/astragrid-recommend`: deterministic evidence-bound recommendation rules.
+- `crates/astragrid-report`: Markdown incident reports.
+- `crates/astragrid-scenario`: executable mission acceptance scenarios.
+- `crates/astragrid-state`: current mission state projection from ledger events.
+- `crates/astragrid-store`: SQLite mission index for verified ledgers.
+- `crates/astragrid-supervisor`: service manager artifacts for long-running workers.
+- `crates/astragrid-sync`: offline ledger comparison and conflict detection.
+- `crates/astragrid-sync-queue`: durable peer sync queue and retry worker.
+- `crates/astragrid-workflow`: evidence-to-command workflow drafting.
+- `docs/`: architecture, operations, security, and ADRs.
+- `tools/local/`: local workstation helper scripts.
+
+## Roadmap
+
+See `docs/roadmap.md` for the active phase checklist. The next deepening passes are hardware-backed
+keys, live map refresh, release quorum policy files, and peer health dashboard integration.

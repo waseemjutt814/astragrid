@@ -1,0 +1,17 @@
+[package]
+name = "astragrid-map"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+astragrid-geo = { path = "../astragrid-geo" }
+astragrid-state = { path = "../astragrid-state" }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+astragrid-core = { path = "../astragrid-core" }
+tempfile.workspace = true

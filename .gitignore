@@ -1,0 +1,10 @@
+/target/
+/.tools/
+/.cache/
+/.idea/
+/.vscode/
+*.log
+*.tmp
+*.bak
+*.local
+Cargo.lock.bak

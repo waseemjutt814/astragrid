@@ -1,0 +1,14 @@
+[package]
+name = "astragrid-recommend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+astragrid-evidence = { path = "../astragrid-evidence" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
