@@ -1203,7 +1203,7 @@ enum DashboardCommands {
         evidence_bundle: Vec<PathBuf>,
         #[arg(long)]
         map_href: Option<String>,
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = 0)]
         refresh_seconds: u64,
         /// Optional finite request count for smoke tests and supervised runs.
         #[arg(long)]

@@ -102,7 +102,9 @@ Invoke-WebRequest "http://127.0.0.1:17882/console.html?token=operator-console-lo
 ```
 
 The console is token-gated and read-only. Mission changes still go through signed CLI commands,
-approvals, policy packs, and registry checks.
+approvals, policy packs, and registry checks. Refresh is manual by default; add
+`--refresh-seconds 5` when the operator explicitly wants live polling, then enable the Live toggle in
+the browser.
 
 ## Backup
 

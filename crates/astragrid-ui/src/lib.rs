@@ -84,11 +84,6 @@ pub fn render_operator_console(
         .map(escape_html)
         .unwrap_or_else(|| "mission not set".to_owned());
     let generated_at = escape_html(&document.generated_at.to_string());
-    let refresh_meta = if refresh_seconds == 0 {
-        String::new()
-    } else {
-        format!("<meta http-equiv=\"refresh\" content=\"{refresh_seconds}\">\n")
-    };
 
     format!(
         r#"<!doctype html>
@@ -96,7 +91,7 @@ pub fn render_operator_console(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{refresh_meta}<title>{title}</title>
+<title>{title}</title>
 <style>
 :root {{
   color-scheme: light;
@@ -118,7 +113,7 @@ body {{
   color:var(--ink);
   font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;
 }}
-header {{
+.header {{
   background:var(--brand);
   color:#fff;
   border-bottom:4px solid var(--ok);
@@ -127,6 +122,19 @@ header {{
 h1 {{ margin:0; font-size:22px; font-weight:700; letter-spacing:0 }}
 h2 {{ margin:0 0 10px; font-size:15px; color:var(--brand); letter-spacing:0 }}
 button {{ font:inherit }}
+.header-row {{ display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap }}
+.toolbar {{ display:flex; gap:8px; align-items:center; flex-wrap:wrap }}
+.toolbar button,.toolbar label {{
+  min-height:34px;
+  border:1px solid rgba(255,255,255,.38);
+  border-radius:6px;
+  background:rgba(255,255,255,.12);
+  color:#fff;
+  padding:6px 10px;
+}}
+.toolbar button {{ cursor:pointer }}
+.toolbar label {{ display:flex; align-items:center; gap:7px }}
+.toolbar input {{ accent-color:#6bd39c }}
 .topline {{ display:flex; flex-wrap:wrap; gap:8px 18px; margin-top:6px; color:#dbe7f3 }}
 .shell {{
   width:min(1480px,100%);
@@ -211,16 +219,23 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
   color:var(--muted);
   padding:6px 9px;
 }}
+.overview-grid {{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  gap:14px;
+  margin-top:14px;
+}}
 .map-link {{ color:#0f5ca8; font-weight:700; text-decoration:none }}
-.map-link:focus,.rail button:focus {{ outline:2px solid var(--focus); outline-offset:2px }}
+.map-link:focus,.rail button:focus,.toolbar button:focus {{ outline:2px solid var(--focus); outline-offset:2px }}
 @media (max-width:980px) {{
   .shell {{ grid-template-columns:1fr }}
   .rail {{ position:static; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px }}
   .metrics {{ grid-template-columns:repeat(2,minmax(0,1fr)) }}
   .split {{ grid-template-columns:1fr }}
+  .overview-grid {{ grid-template-columns:1fr }}
 }}
 @media (max-width:560px) {{
-  header {{ padding:14px }}
+  .header {{ padding:14px }}
   .shell {{ padding:10px }}
   .rail {{ grid-template-columns:1fr }}
   .metrics {{ grid-template-columns:1fr }}
@@ -229,9 +244,17 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
 </style>
 </head>
 <body>
-<header>
-  <h1>{title}</h1>
-  <div class="topline"><span id="mission-name">{mission}</span><span id="generated-at">generated {generated_at}</span></div>
+<header class="header">
+  <div class="header-row">
+    <div>
+      <h1>{title}</h1>
+      <div class="topline"><span id="mission-name">{mission}</span><span id="generated-at">generated {generated_at}</span></div>
+    </div>
+    <div class="toolbar" aria-label="Console controls">
+      <button type="button" id="refresh-now">Refresh</button>
+      <label><input type="checkbox" id="live-refresh"> Live</label>
+    </div>
+  </div>
 </header>
 <main id="operator-console" class="shell" data-refresh-ms="{refresh_ms}" data-api-token="{api_token}">
   <nav class="rail" aria-label="Operator console sections">
@@ -260,6 +283,21 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
         </div>
         <div>
           <div class="status-line" id="status-line">API sync pending</div>
+        </div>
+      </div>
+      <div class="overview-grid">
+        <div class="panel">
+          <h2>Recent Mission Events</h2>
+          <table>
+            <thead><tr><th>Seq</th><th>Action</th><th>Subject</th><th>Priority</th></tr></thead>
+            <tbody id="overview-event-rows"></tbody>
+          </table>
+        </div>
+        <div class="panel">
+          <h2>Operator Attention</h2>
+          <table>
+            <tbody id="overview-attention-rows"></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -306,6 +344,9 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
 const root = document.getElementById("operator-console");
 const refreshMs = Number(root.dataset.refreshMs || "0");
 const apiToken = root.dataset.apiToken || "";
+const liveRefresh = document.getElementById("live-refresh");
+const refreshNow = document.getElementById("refresh-now");
+let refreshTimer = null;
 const apiPath = (path) => {{
   if (!apiToken) return path;
   const separator = path.includes("?") ? "&" : "?";
@@ -334,6 +375,16 @@ const pill = (value) => html(`<span class="pill ${{classify(String(value))}}">${
 const code = (value) => html(`<code>${{escapeHtml(value)}}</code>`);
 const cells = (values) => `<tr>${{values.map((value) => `<td>${{cell(value)}}</td>`).join("")}}</tr>`;
 const emptyRow = (count, label) => `<tr><td colspan="${{count}}" class="muted">${{escapeHtml(label)}}</td></tr>`;
+const peerHealthLabel = (value) => {{
+  if (!value || value === "not_configured") return "Local mode";
+  return String(value).replaceAll("_", " ");
+}};
+const peerHealthDetail = (summary) => {{
+  if (summary.peer_health_status === "not_configured") {{
+    return `local workspace | last hash: ${{summary.last_hash || "--"}}`;
+  }}
+  return `peer health: ${{peerHealthLabel(summary.peer_health_status)}} | last hash: ${{summary.last_hash || "--"}}`;
+}};
 
 function tableRows(id, rows, count, render, emptyLabel) {{
   const target = document.getElementById(id);
@@ -352,7 +403,7 @@ function renderSummary(summary) {{
   banner.classList.toggle("degraded", summary.peer_health_status === "degraded");
   banner.classList.toggle("failing", summary.peer_health_status === "failing");
   setText("health-title", summary.healthy ? "Mission state verified" : "Mission state needs attention");
-  setText("health-detail", `peer health: ${{summary.peer_health_status}} | last hash: ${{summary.last_hash || "--"}}`);
+  setText("health-detail", peerHealthDetail(summary));
   const map = document.getElementById("map-link");
   if (summary.map_href && !String(summary.map_href).trim().toLowerCase().startsWith("javascript:")) {{
     map.href = summary.map_href;
@@ -367,10 +418,11 @@ function renderSummary(summary) {{
     ["Dispatches", summary.dispatches],
     ["Annotations", summary.annotations],
     ["Store events", summary.store_events ?? "--"],
+    ["Sync mode", peerHealthLabel(summary.peer_health_status)],
     ["Peer jobs", summary.peer_jobs],
     ["Audit items", summary.audit_items],
   ].map(([label, value]) => cells([label, value])).join("");
-  setText("status-line", `local API healthy: ${{summary.healthy}} | refresh: ${{refreshMs === 0 ? "manual" : `${{refreshMs / 1000}}s`}}`);
+  setText("status-line", `local API healthy: ${{summary.healthy}} | refresh: ${{liveRefresh.checked && refreshMs > 0 ? `${{refreshMs / 1000}}s live` : "manual"}}`);
 }}
 
 function renderEvents(events) {{
@@ -382,6 +434,12 @@ function renderEvents(events) {{
     pill(event.priority),
     code(event.hash),
   ]), "No mission events in the current dashboard window.");
+  tableRows("overview-event-rows", events.slice(0, 5), 4, (event) => cells([
+    event.sequence,
+    pill(event.action),
+    event.subject,
+    pill(event.priority),
+  ]), "No recent mission events loaded.");
 }}
 
 function renderApprovals(approvals) {{
@@ -413,11 +471,11 @@ function renderPeers(payload) {{
     pill(job.status),
     `${{job.attempts}}/${{job.max_attempts}}`,
     job.next_attempt_at,
-  ]), "No peer sync jobs configured.");
+  ]), "Local-only workspace: no peer sync jobs are attached.");
   const summary = payload.queue || {{}};
   const health = payload.health || {{}};
   document.getElementById("peer-summary-rows").innerHTML = [
-    ["Health", pill(health.status || "not_configured")],
+    ["Health", pill(peerHealthLabel(health.status))],
     ["Total", summary.total ?? 0],
     ["Pending", summary.pending ?? 0],
     ["Retrying", summary.retrying ?? 0],
@@ -426,6 +484,19 @@ function renderPeers(payload) {{
     ["Due now", health.due ?? 0],
     ["Stale retrying", health.stale_retrying ?? 0],
   ].map(([label, value]) => cells([label, value])).join("");
+}}
+
+function renderAttention(summary, approvals, peers) {{
+  const pending = approvals.filter((item) => item.status === "pending");
+  const failedPeers = (peers.jobs || []).filter((job) => job.status === "failed" || job.status === "retrying");
+  const rows = [
+    ["Open incidents", summary.open_incidents > 0 ? pill(summary.open_incidents) : "0"],
+    ["Pending approvals", pending.length > 0 ? pill(pending.length) : "0"],
+    ["Peer sync", peerHealthLabel(summary.peer_health_status)],
+    ["Peer jobs needing attention", failedPeers.length > 0 ? pill(failedPeers.length) : "0"],
+    ["Evidence bundles", summary.evidence_bundles],
+  ];
+  document.getElementById("overview-attention-rows").innerHTML = rows.map(([label, value]) => cells([label, value])).join("");
 }}
 
 async function loadConsole() {{
@@ -441,6 +512,7 @@ async function loadConsole() {{
   renderApprovals(approvals);
   renderAudit(audit);
   renderPeers(peers);
+  renderAttention(summary, approvals, peers);
 }}
 
 document.querySelectorAll(".rail button").forEach((button) => {{
@@ -450,15 +522,27 @@ document.querySelectorAll(".rail button").forEach((button) => {{
   }});
 }});
 
+function setLiveRefresh(enabled) {{
+  if (refreshTimer) {{
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }}
+  if (enabled && refreshMs > 0) {{
+    refreshTimer = setInterval(() => loadConsole().catch((error) => setText("status-line", error.message)), refreshMs);
+  }}
+}}
+
+refreshNow.addEventListener("click", () => loadConsole().catch((error) => setText("status-line", error.message)));
+liveRefresh.checked = false;
+liveRefresh.disabled = refreshMs === 0;
+liveRefresh.addEventListener("change", () => setLiveRefresh(liveRefresh.checked));
+
 loadConsole().catch((error) => {{
   setText("health-title", "Local API unavailable");
   setText("health-detail", error.message);
   document.getElementById("health-banner").classList.add("failing");
   setText("status-line", error.message);
 }});
-if (refreshMs > 0) {{
-  setInterval(() => loadConsole().catch((error) => setText("status-line", error.message)), refreshMs);
-}}
 </script>
 </body>
 </html>
@@ -671,8 +755,10 @@ mod tests {
     fn console_html_can_auto_refresh() {
         let response = route_operator_console(&document("Ops"), "/", 7, None).unwrap();
         let html = String::from_utf8(response.body).unwrap();
-        assert!(html.contains("http-equiv=\"refresh\" content=\"7\""));
         assert!(html.contains("data-refresh-ms=\"7000\""));
+        assert!(html.contains("id=\"refresh-now\""));
+        assert!(html.contains("id=\"live-refresh\""));
+        assert!(!html.contains("http-equiv=\"refresh\""));
     }
 
     #[test]
