@@ -316,5 +316,7 @@ freshly built release binary:
 cargo run -q -p astragrid -- provenance verify-signature --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json
 cargo run -q -p astragrid -- provenance quorum-create --threshold 1 --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --output dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
 cargo run -q -p astragrid -- provenance quorum-verify --input dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
-cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
+cargo run -q -p astragrid -- provenance policy-template --output dist\astragrid-release-policy.json --package astragrid --target windows-x64 --min-distinct-valid-signers 1 --required-signer-id "<operator-id>" --require-clean-git
+cargo run -q -p astragrid -- provenance policy-verify --policy dist\astragrid-release-policy.json --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
+cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json --policy dist\astragrid-release-policy.json
 ```

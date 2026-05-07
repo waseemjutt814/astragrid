@@ -43,7 +43,7 @@ This is the completed build checklist for the current high-value phases.
 ## Next Wave: Operator Productization
 
 - [x] Add an operator handoff bundle that exports dashboard, state, workspace doctor, optional map console, optional release doctor, and manifest files.
-- [ ] Add release custody policy files for required signer ids and promotion thresholds.
+- [x] Add release custody policy files for required signer ids and promotion thresholds.
 - [ ] Add live-refresh local dashboard serving without weakening offline export behavior.
 - [ ] Add peer worker install/uninstall wrappers around generated supervisor artifacts.
 - [ ] Add a full mission acceptance pack that exercises identity, registry, evidence, approval, dashboard, ops bundle, package, and doctor gates together.

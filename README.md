@@ -43,6 +43,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Self-contained operator dashboard export with peer health status, recent errors, and map links.
 - Workspace doctor for ledger, state, store, key, approval, and peer queue checks.
 - Release doctor for package provenance, detached signature, and quorum readiness checks.
+- Release custody policy verification for required signer ids, allowed signer sets, clean Git state, and promotion thresholds.
 - Operator handoff bundle export with dashboard, state, doctor reports, optional map console, and manifest.
 - Payload size limit and deterministic payload hashing.
 - Release provenance verification with fail-closed SHA-256 checks for packaged artifacts.

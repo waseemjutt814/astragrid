@@ -217,7 +217,9 @@ operator without embedding local workstation paths.
 `astragrid-doctor` checks local artifact health without mutating them. It verifies the ledger,
 materializes state, checks optional store, key, approval, and peer queue inputs, and returns an
 overall healthy/warning/failed report. `doctor release` verifies package provenance and optional
-signature or quorum custody before an artifact is shared.
+signature, quorum, or release custody policy before an artifact is shared. Custody policies bind a
+package to required signer ids, allowed signer ids, signer thresholds, target metadata, and clean
+Git provenance.
 
 ## Future System Shape
 

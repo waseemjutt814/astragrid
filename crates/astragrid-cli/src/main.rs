@@ -19,7 +19,7 @@ use astragrid_map::{MapConsoleDocument, MapDocument};
 use astragrid_net::{PeerEndpoint, fetch_ledger_snapshot, plan_multi_peer_sync, serve_ledger_once};
 use astragrid_oskey::OsSealedSecret;
 use astragrid_provenance::{
-    PackageProvenance, ProvenanceQuorumEnvelope, ProvenanceSignatureEnvelope,
+    PackageProvenance, ProvenanceQuorumEnvelope, ProvenanceSignatureEnvelope, ReleaseCustodyPolicy,
 };
 use astragrid_recommend::{
     ModelRecommendationCandidate, RecommendationRule, SensorReading,
@@ -717,6 +717,8 @@ enum OpsCommands {
         signature: Vec<PathBuf>,
         #[arg(long)]
         quorum: Option<PathBuf>,
+        #[arg(long)]
+        release_policy: Option<PathBuf>,
     },
 }
 
@@ -743,6 +745,8 @@ enum DoctorCommands {
         signature: Vec<PathBuf>,
         #[arg(long)]
         quorum: Option<PathBuf>,
+        #[arg(long)]
+        policy: Option<PathBuf>,
     },
 }
 
@@ -784,6 +788,34 @@ enum ProvenanceCommands {
     QuorumVerify {
         #[arg(long)]
         input: PathBuf,
+    },
+    /// Write a release custody policy JSON file.
+    PolicyTemplate {
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        package: Option<String>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value_t = 1)]
+        min_distinct_valid_signers: usize,
+        #[arg(long)]
+        required_signer_id: Vec<String>,
+        #[arg(long)]
+        allowed_signer_id: Vec<String>,
+        #[arg(long, default_value_t = false)]
+        require_clean_git: bool,
+    },
+    /// Verify a release custody policy against package provenance and quorum.
+    PolicyVerify {
+        #[arg(long)]
+        policy: PathBuf,
+        #[arg(long)]
+        provenance: PathBuf,
+        #[arg(long)]
+        quorum: PathBuf,
     },
 }
 
@@ -1731,6 +1763,7 @@ fn main() -> Result<()> {
                 provenance,
                 signature,
                 quorum,
+                release_policy,
             } => print_json(&export_ops_bundle(OpsBundleRequest {
                 ledger,
                 output_dir,
@@ -1744,6 +1777,7 @@ fn main() -> Result<()> {
                 provenance,
                 signatures: signature,
                 quorum,
+                release_policy,
             })?),
         },
         Commands::Doctor { command } => match command {
@@ -1764,10 +1798,12 @@ fn main() -> Result<()> {
                 provenance,
                 signature,
                 quorum,
+                policy,
             } => print_json(&run_release_doctor(ReleaseDoctorInput {
                 provenance,
                 signatures: signature,
                 quorum,
+                policy,
             })),
         },
         Commands::Provenance { command } => match command {
@@ -1834,6 +1870,56 @@ fn main() -> Result<()> {
                 print_json(&report)?;
                 if !report.valid {
                     bail!("provenance quorum verification failed");
+                }
+                Ok(())
+            }
+            ProvenanceCommands::PolicyTemplate {
+                output,
+                package,
+                version,
+                target,
+                min_distinct_valid_signers,
+                required_signer_id,
+                allowed_signer_id,
+                require_clean_git,
+            } => {
+                let policy = ReleaseCustodyPolicy {
+                    schema: 1,
+                    package,
+                    version,
+                    target,
+                    min_distinct_valid_signers,
+                    required_signer_ids: required_signer_id,
+                    allowed_signer_ids: allowed_signer_id,
+                    require_clean_git,
+                };
+                policy.validate()?;
+                write_json_file(&output, &policy)?;
+                print_json(&json!({
+                    "output": output,
+                    "min_distinct_valid_signers": policy.min_distinct_valid_signers,
+                    "required_signers": policy.required_signer_ids.len(),
+                    "allowed_signers": policy.allowed_signer_ids.len(),
+                }))
+            }
+            ProvenanceCommands::PolicyVerify {
+                policy,
+                provenance,
+                quorum,
+            } => {
+                let policy_doc = ReleaseCustodyPolicy::load(&policy)?;
+                let package = PackageProvenance::load(&provenance)?;
+                let package_report = package.verify_hashes(&provenance)?;
+                if !package_report.valid {
+                    print_json(&package_report)?;
+                    bail!("provenance verification failed");
+                }
+                let quorum_doc = ProvenanceQuorumEnvelope::load(&quorum)?;
+                let quorum_report = quorum_doc.verify(&quorum)?;
+                let report = policy_doc.verify(&package, &quorum_report)?;
+                print_json(&report)?;
+                if !report.valid {
+                    bail!("release custody policy verification failed");
                 }
                 Ok(())
             }
@@ -2029,6 +2115,7 @@ struct OpsBundleRequest {
     provenance: Option<PathBuf>,
     signatures: Vec<PathBuf>,
     quorum: Option<PathBuf>,
+    release_policy: Option<PathBuf>,
 }
 
 fn export_ops_bundle(request: OpsBundleRequest) -> Result<Value> {
@@ -2101,6 +2188,7 @@ fn export_ops_bundle(request: OpsBundleRequest) -> Result<Value> {
                 provenance,
                 signatures: request.signatures,
                 quorum: request.quorum,
+                policy: request.release_policy,
             });
             let release_doctor_path = request.output_dir.join("doctor-release.json");
             write_json_file(&release_doctor_path, &report)?;
@@ -2636,6 +2724,7 @@ mod tests {
             provenance: None,
             signatures: Vec::new(),
             quorum: None,
+            release_policy: None,
         })
         .unwrap();
 
@@ -2661,6 +2750,8 @@ mod tests {
             "dist/package.provenance.sig.json",
             "--quorum",
             "dist/package.provenance.quorum.json",
+            "--policy",
+            "dist/release-policy.json",
         ])
         .unwrap();
 
@@ -2671,6 +2762,7 @@ mod tests {
                         provenance,
                         signature,
                         quorum,
+                        policy,
                     },
             } => {
                 assert_eq!(provenance, PathBuf::from("dist/package.provenance.json"));
@@ -2682,6 +2774,92 @@ mod tests {
                     quorum,
                     Some(PathBuf::from("dist/package.provenance.quorum.json"))
                 );
+                assert_eq!(policy, Some(PathBuf::from("dist/release-policy.json")));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_provenance_policy_template_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "provenance",
+            "policy-template",
+            "--output",
+            "dist/release-policy.json",
+            "--package",
+            "astragrid",
+            "--target",
+            "windows-x64",
+            "--min-distinct-valid-signers",
+            "2",
+            "--required-signer-id",
+            "operator-a",
+            "--allowed-signer-id",
+            "operator-a",
+            "--allowed-signer-id",
+            "operator-b",
+            "--require-clean-git",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Provenance {
+                command:
+                    ProvenanceCommands::PolicyTemplate {
+                        output,
+                        package,
+                        target,
+                        min_distinct_valid_signers,
+                        required_signer_id,
+                        allowed_signer_id,
+                        require_clean_git,
+                        ..
+                    },
+            } => {
+                assert_eq!(output, PathBuf::from("dist/release-policy.json"));
+                assert_eq!(package, Some("astragrid".to_owned()));
+                assert_eq!(target, Some("windows-x64".to_owned()));
+                assert_eq!(min_distinct_valid_signers, 2);
+                assert_eq!(required_signer_id, vec!["operator-a".to_owned()]);
+                assert_eq!(
+                    allowed_signer_id,
+                    vec!["operator-a".to_owned(), "operator-b".to_owned()]
+                );
+                assert!(require_clean_git);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_provenance_policy_verify_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "provenance",
+            "policy-verify",
+            "--policy",
+            "dist/release-policy.json",
+            "--provenance",
+            "dist/package.provenance.json",
+            "--quorum",
+            "dist/package.provenance.quorum.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Provenance {
+                command:
+                    ProvenanceCommands::PolicyVerify {
+                        policy,
+                        provenance,
+                        quorum,
+                    },
+            } => {
+                assert_eq!(policy, PathBuf::from("dist/release-policy.json"));
+                assert_eq!(provenance, PathBuf::from("dist/package.provenance.json"));
+                assert_eq!(quorum, PathBuf::from("dist/package.provenance.quorum.json"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use astragrid_approvals::ApprovalLog;
 use astragrid_core::{MissionLedger, OperatorKeypair};
 use astragrid_provenance::{
-    PackageProvenance, ProvenanceQuorumEnvelope, ProvenanceSignatureEnvelope,
+    PackageProvenance, ProvenanceQuorumEnvelope, ProvenanceSignatureEnvelope, ReleaseCustodyPolicy,
 };
 use astragrid_state::MissionState;
 use astragrid_store::MissionStore;
@@ -25,6 +25,7 @@ pub struct ReleaseDoctorInput {
     pub provenance: PathBuf,
     pub signatures: Vec<PathBuf>,
     pub quorum: Option<PathBuf>,
+    pub policy: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,7 +80,7 @@ pub fn run_doctor(input: DoctorInput) -> DoctorReport {
 
 pub fn run_release_doctor(input: ReleaseDoctorInput) -> DoctorReport {
     let mut checks = Vec::new();
-    check_package_provenance(input.provenance, &mut checks);
+    let package = check_package_provenance(input.provenance, &mut checks);
     if input.signatures.is_empty() && input.quorum.is_none() {
         checks.push(DoctorCheck::warning(
             "release_custody",
@@ -89,8 +90,18 @@ pub fn run_release_doctor(input: ReleaseDoctorInput) -> DoctorReport {
     for signature in input.signatures {
         check_provenance_signature(signature, &mut checks);
     }
-    if let Some(quorum) = input.quorum {
-        check_provenance_quorum(quorum, &mut checks);
+    let quorum_report = input
+        .quorum
+        .and_then(|quorum| check_provenance_quorum(quorum, &mut checks));
+    if let Some(policy) = input.policy {
+        if let (Some(package), Some(quorum_report)) = (package, quorum_report) {
+            check_release_policy(policy, &package, &quorum_report, &mut checks);
+        } else {
+            checks.push(DoctorCheck::failed(
+                "release_policy",
+                json!({"path": policy, "error": "policy requires valid provenance and quorum inputs"}),
+            ));
+        }
     }
     summarize(checks)
 }
@@ -240,29 +251,48 @@ fn check_peer_queue(peer_queue: PathBuf, checks: &mut Vec<DoctorCheck>) {
     }
 }
 
-fn check_package_provenance(provenance: PathBuf, checks: &mut Vec<DoctorCheck>) {
+fn check_package_provenance(
+    provenance: PathBuf,
+    checks: &mut Vec<DoctorCheck>,
+) -> Option<PackageProvenance> {
     if !provenance.exists() {
         checks.push(DoctorCheck::failed(
             "release_provenance",
             json!({"path": provenance, "error": "provenance file does not exist"}),
         ));
-        return;
+        return None;
     }
-    match PackageProvenance::load(&provenance)
-        .and_then(|package| package.verify_hashes(&provenance))
-    {
-        Ok(report) if report.valid => checks.push(DoctorCheck::ok(
-            "release_provenance",
-            json!({"path": provenance, "verification": report}),
-        )),
-        Ok(report) => checks.push(DoctorCheck::failed(
-            "release_provenance",
-            json!({"path": provenance, "verification": report}),
-        )),
-        Err(error) => checks.push(DoctorCheck::failed(
-            "release_provenance",
-            json!({"path": provenance, "error": error.to_string()}),
-        )),
+    match PackageProvenance::load(&provenance) {
+        Ok(package) => match package.verify_hashes(&provenance) {
+            Ok(report) if report.valid => {
+                checks.push(DoctorCheck::ok(
+                    "release_provenance",
+                    json!({"path": provenance, "verification": report}),
+                ));
+                Some(package)
+            }
+            Ok(report) => {
+                checks.push(DoctorCheck::failed(
+                    "release_provenance",
+                    json!({"path": provenance, "verification": report}),
+                ));
+                None
+            }
+            Err(error) => {
+                checks.push(DoctorCheck::failed(
+                    "release_provenance",
+                    json!({"path": provenance, "error": error.to_string()}),
+                ));
+                None
+            }
+        },
+        Err(error) => {
+            checks.push(DoctorCheck::failed(
+                "release_provenance",
+                json!({"path": provenance, "error": error.to_string()}),
+            ));
+            None
+        }
     }
 }
 
@@ -292,26 +322,69 @@ fn check_provenance_signature(signature: PathBuf, checks: &mut Vec<DoctorCheck>)
     }
 }
 
-fn check_provenance_quorum(quorum: PathBuf, checks: &mut Vec<DoctorCheck>) {
+fn check_provenance_quorum(
+    quorum: PathBuf,
+    checks: &mut Vec<DoctorCheck>,
+) -> Option<astragrid_provenance::ProvenanceQuorumVerificationReport> {
     if !quorum.exists() {
         checks.push(DoctorCheck::failed(
             "release_quorum",
             json!({"path": quorum, "error": "quorum file does not exist"}),
         ));
-        return;
+        return None;
     }
     match ProvenanceQuorumEnvelope::load(&quorum).and_then(|envelope| envelope.verify(&quorum)) {
+        Ok(report) if report.valid => {
+            checks.push(DoctorCheck::ok(
+                "release_quorum",
+                json!({"path": quorum, "verification": report}),
+            ));
+            Some(report)
+        }
+        Ok(report) => {
+            checks.push(DoctorCheck::failed(
+                "release_quorum",
+                json!({"path": quorum, "verification": report}),
+            ));
+            None
+        }
+        Err(error) => {
+            checks.push(DoctorCheck::failed(
+                "release_quorum",
+                json!({"path": quorum, "error": error.to_string()}),
+            ));
+            None
+        }
+    }
+}
+
+fn check_release_policy(
+    policy: PathBuf,
+    package: &PackageProvenance,
+    quorum: &astragrid_provenance::ProvenanceQuorumVerificationReport,
+    checks: &mut Vec<DoctorCheck>,
+) {
+    if !policy.exists() {
+        checks.push(DoctorCheck::failed(
+            "release_policy",
+            json!({"path": policy, "error": "policy file does not exist"}),
+        ));
+        return;
+    }
+    match ReleaseCustodyPolicy::load(&policy)
+        .and_then(|policy_doc| policy_doc.verify(package, quorum))
+    {
         Ok(report) if report.valid => checks.push(DoctorCheck::ok(
-            "release_quorum",
-            json!({"path": quorum, "verification": report}),
+            "release_policy",
+            json!({"path": policy, "verification": report}),
         )),
         Ok(report) => checks.push(DoctorCheck::failed(
-            "release_quorum",
-            json!({"path": quorum, "verification": report}),
+            "release_policy",
+            json!({"path": policy, "verification": report}),
         )),
         Err(error) => checks.push(DoctorCheck::failed(
-            "release_quorum",
-            json!({"path": quorum, "error": error.to_string()}),
+            "release_policy",
+            json!({"path": policy, "error": error.to_string()}),
         )),
     }
 }
@@ -373,7 +446,9 @@ impl DoctorCheck {
 
 #[cfg(test)]
 mod tests {
-    use astragrid_core::{Action, Actor, CommandRequest, MissionLedger, Priority, Role};
+    use astragrid_core::{
+        Action, Actor, CommandRequest, MissionLedger, OperatorKeypair, Priority, Role,
+    };
     use astragrid_provenance::ProvenanceFile;
     use serde_json::json;
     use tempfile::tempdir;
@@ -451,6 +526,7 @@ mod tests {
             provenance: provenance_path,
             signatures: Vec::new(),
             quorum: None,
+            policy: None,
         });
 
         assert_eq!(report.status, DoctorStatus::Warning);
@@ -466,6 +542,65 @@ mod tests {
                 .checks
                 .iter()
                 .any(|check| check.name == "release_custody")
+        );
+    }
+
+    #[test]
+    fn reports_release_policy_health() {
+        let dir = tempdir().unwrap();
+        let artifact = dir.path().join("artifact.zip");
+        std::fs::write(&artifact, b"release artifact").unwrap();
+        let provenance = PackageProvenance {
+            schema: 1,
+            package: "astragrid".to_owned(),
+            version: "0.1.0".to_owned(),
+            target: "windows-x64".to_owned(),
+            generated_at: "2026-05-07T00:00:00Z".to_owned(),
+            artifact: Some(ProvenanceFile {
+                path: PathBuf::from("artifact.zip"),
+                sha256: sha256_bytes(b"release artifact"),
+            }),
+            binary: None,
+            included_files: Vec::new(),
+            toolchain: serde_json::Value::Null,
+            git: json!({"dirty": false}),
+        };
+        let provenance_path = dir.path().join("artifact.provenance.json");
+        std::fs::write(&provenance_path, serde_json::to_vec(&provenance).unwrap()).unwrap();
+        let signer = OperatorKeypair::generate("release-one", Role::Operator);
+        let quorum = ProvenanceQuorumEnvelope::new(
+            1,
+            vec![ProvenanceSignatureEnvelope::sign_file(&provenance_path, &signer).unwrap()],
+        )
+        .unwrap();
+        let quorum_path = dir.path().join("artifact.provenance.quorum.json");
+        std::fs::write(&quorum_path, serde_json::to_vec(&quorum).unwrap()).unwrap();
+        let policy = ReleaseCustodyPolicy {
+            schema: 1,
+            package: Some("astragrid".to_owned()),
+            version: Some("0.1.0".to_owned()),
+            target: Some("windows-x64".to_owned()),
+            min_distinct_valid_signers: 1,
+            required_signer_ids: vec![signer.identity().id.clone()],
+            allowed_signer_ids: vec![signer.identity().id.clone()],
+            require_clean_git: true,
+        };
+        let policy_path = dir.path().join("release-policy.json");
+        std::fs::write(&policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+
+        let report = run_release_doctor(ReleaseDoctorInput {
+            provenance: provenance_path,
+            signatures: Vec::new(),
+            quorum: Some(quorum_path),
+            policy: Some(policy_path),
+        });
+
+        assert_eq!(report.status, DoctorStatus::Healthy);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.name == "release_policy")
         );
     }
 

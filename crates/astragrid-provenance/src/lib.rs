@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     io::{BufReader, Read},
     path::{Path, PathBuf},
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const PROVENANCE_SIGNATURE_SCHEMA: u16 = 1;
+const RELEASE_CUSTODY_POLICY_SCHEMA: u16 = 1;
 const PROVENANCE_SIGNATURE_PURPOSE: &str = "astragrid-release-provenance-v1";
 const DIGEST_ALGORITHM: &str = "sha256";
 
@@ -95,6 +97,41 @@ pub struct ProvenanceQuorumVerificationReport {
     pub distinct_valid_signers: usize,
     pub reports: Vec<ProvenanceSignatureVerificationReport>,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseCustodyPolicy {
+    pub schema: u16,
+    pub package: Option<String>,
+    pub version: Option<String>,
+    pub target: Option<String>,
+    pub min_distinct_valid_signers: usize,
+    #[serde(default)]
+    pub required_signer_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_signer_ids: Vec<String>,
+    #[serde(default)]
+    pub require_clean_git: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseCustodyPolicyReport {
+    pub valid: bool,
+    pub checks: Vec<ReleaseCustodyPolicyCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseCustodyPolicyCheck {
+    pub name: String,
+    pub status: ReleaseCustodyPolicyCheckStatus,
+    pub detail: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseCustodyPolicyCheckStatus {
+    Pass,
+    Fail,
 }
 
 impl PackageProvenance {
@@ -283,6 +320,196 @@ impl ProvenanceQuorumEnvelope {
     }
 }
 
+impl ReleaseCustodyPolicy {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ProvenanceError> {
+        let mut bytes = fs::read(path)?;
+        strip_utf8_bom(&mut bytes);
+        let policy = serde_json::from_slice(&bytes)?;
+        Ok(policy)
+    }
+
+    pub fn verify(
+        &self,
+        provenance: &PackageProvenance,
+        quorum: &ProvenanceQuorumVerificationReport,
+    ) -> Result<ReleaseCustodyPolicyReport, ProvenanceError> {
+        self.validate()?;
+        let mut checks = Vec::new();
+        if let Some(package) = &self.package {
+            checks.push(policy_match_check("package", package, &provenance.package));
+        }
+        if let Some(version) = &self.version {
+            checks.push(policy_match_check("version", version, &provenance.version));
+        }
+        if let Some(target) = &self.target {
+            checks.push(policy_match_check("target", target, &provenance.target));
+        }
+        if self.require_clean_git {
+            let dirty = provenance
+                .git
+                .get("dirty")
+                .and_then(serde_json::Value::as_bool);
+            checks.push(match dirty {
+                Some(false) => ReleaseCustodyPolicyCheck::pass(
+                    "clean_git",
+                    serde_json::json!({"dirty": false}),
+                ),
+                Some(true) => {
+                    ReleaseCustodyPolicyCheck::fail("clean_git", serde_json::json!({"dirty": true}))
+                }
+                None => ReleaseCustodyPolicyCheck::fail(
+                    "clean_git",
+                    serde_json::json!({"error": "git dirty flag is missing"}),
+                ),
+            });
+        }
+
+        checks.push(if quorum.valid {
+            ReleaseCustodyPolicyCheck::pass(
+                "quorum",
+                serde_json::json!({
+                    "threshold": quorum.threshold,
+                    "distinct_valid_signers": quorum.distinct_valid_signers,
+                }),
+            )
+        } else {
+            ReleaseCustodyPolicyCheck::fail("quorum", serde_json::json!({"detail": quorum.detail}))
+        });
+
+        let valid_signers = quorum
+            .reports
+            .iter()
+            .filter(|report| report.valid)
+            .map(|report| report.signer.id.clone())
+            .collect::<BTreeSet<_>>();
+        checks.push(if valid_signers.len() >= self.min_distinct_valid_signers {
+            ReleaseCustodyPolicyCheck::pass(
+                "min_distinct_valid_signers",
+                serde_json::json!({
+                    "required": self.min_distinct_valid_signers,
+                    "actual": valid_signers.len(),
+                }),
+            )
+        } else {
+            ReleaseCustodyPolicyCheck::fail(
+                "min_distinct_valid_signers",
+                serde_json::json!({
+                    "required": self.min_distinct_valid_signers,
+                    "actual": valid_signers.len(),
+                }),
+            )
+        });
+
+        let required = self
+            .required_signer_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !required.is_empty() {
+            let missing = required
+                .difference(&valid_signers)
+                .cloned()
+                .collect::<Vec<_>>();
+            checks.push(if missing.is_empty() {
+                ReleaseCustodyPolicyCheck::pass(
+                    "required_signers",
+                    serde_json::json!({"required": required}),
+                )
+            } else {
+                ReleaseCustodyPolicyCheck::fail(
+                    "required_signers",
+                    serde_json::json!({"missing": missing}),
+                )
+            });
+        }
+
+        let allowed = self
+            .allowed_signer_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !allowed.is_empty() {
+            let unexpected = valid_signers
+                .difference(&allowed)
+                .cloned()
+                .collect::<Vec<_>>();
+            checks.push(if unexpected.is_empty() {
+                ReleaseCustodyPolicyCheck::pass(
+                    "allowed_signers",
+                    serde_json::json!({"allowed": allowed}),
+                )
+            } else {
+                ReleaseCustodyPolicyCheck::fail(
+                    "allowed_signers",
+                    serde_json::json!({"unexpected": unexpected}),
+                )
+            });
+        }
+
+        Ok(ReleaseCustodyPolicyReport {
+            valid: checks
+                .iter()
+                .all(|check| check.status == ReleaseCustodyPolicyCheckStatus::Pass),
+            checks,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), ProvenanceError> {
+        if self.schema != RELEASE_CUSTODY_POLICY_SCHEMA {
+            return Err(ProvenanceError::UnsupportedPolicySchema(self.schema));
+        }
+        if self.min_distinct_valid_signers == 0 {
+            return Err(ProvenanceError::InvalidCustodyPolicy(
+                "min_distinct_valid_signers must be at least 1".to_owned(),
+            ));
+        }
+        for signer_id in self
+            .required_signer_ids
+            .iter()
+            .chain(self.allowed_signer_ids.iter())
+        {
+            if signer_id.trim().is_empty() {
+                return Err(ProvenanceError::InvalidCustodyPolicy(
+                    "signer ids cannot be empty".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ReleaseCustodyPolicyCheck {
+    fn pass(name: impl Into<String>, detail: serde_json::Value) -> Self {
+        Self {
+            name: name.into(),
+            status: ReleaseCustodyPolicyCheckStatus::Pass,
+            detail,
+        }
+    }
+
+    fn fail(name: impl Into<String>, detail: serde_json::Value) -> Self {
+        Self {
+            name: name.into(),
+            status: ReleaseCustodyPolicyCheckStatus::Fail,
+            detail,
+        }
+    }
+}
+
+fn policy_match_check(name: &str, expected: &str, actual: &str) -> ReleaseCustodyPolicyCheck {
+    if expected == actual {
+        ReleaseCustodyPolicyCheck::pass(
+            name,
+            serde_json::json!({"expected": expected, "actual": actual}),
+        )
+    } else {
+        ReleaseCustodyPolicyCheck::fail(
+            name,
+            serde_json::json!({"expected": expected, "actual": actual}),
+        )
+    }
+}
+
 fn verify_file(
     name: &str,
     file: &ProvenanceFile,
@@ -366,6 +593,10 @@ pub enum ProvenanceError {
     UnsupportedSchema(u16),
     #[error("unsupported provenance signature schema {0}")]
     UnsupportedSignatureSchema(u16),
+    #[error("unsupported release custody policy schema {0}")]
+    UnsupportedPolicySchema(u16),
+    #[error("invalid release custody policy: {0}")]
+    InvalidCustodyPolicy(String),
     #[error("provenance contains no artifact or binary file to verify")]
     NoVerifiableFiles,
     #[error("provenance quorum must include at least one signature")]
@@ -547,6 +778,113 @@ mod tests {
         assert!(!report.valid);
         assert_eq!(report.valid_signatures, 2);
         assert_eq!(report.distinct_valid_signers, 1);
+    }
+
+    #[test]
+    fn verifies_release_custody_policy_against_quorum() {
+        let dir = tempdir().unwrap();
+        let provenance_path = dir.path().join("artifact.provenance.json");
+        let provenance = PackageProvenance {
+            schema: 1,
+            package: "astragrid".to_owned(),
+            version: "0.1.0".to_owned(),
+            target: "windows-x64".to_owned(),
+            generated_at: "2026-05-07T00:00:00Z".to_owned(),
+            artifact: None,
+            binary: Some(ProvenanceFile {
+                path: PathBuf::from("astragrid.exe"),
+                sha256: "00".repeat(32),
+            }),
+            included_files: Vec::new(),
+            toolchain: serde_json::Value::Null,
+            git: serde_json::json!({"dirty": false}),
+        };
+        fs::write(&provenance_path, serde_json::to_vec(&provenance).unwrap()).unwrap();
+        let one = OperatorKeypair::generate("release-one", astragrid_core::Role::Operator);
+        let two = OperatorKeypair::generate("release-two", astragrid_core::Role::Operator);
+        let quorum = ProvenanceQuorumEnvelope::new(
+            2,
+            vec![
+                ProvenanceSignatureEnvelope::sign_file(&provenance_path, &one).unwrap(),
+                ProvenanceSignatureEnvelope::sign_file(&provenance_path, &two).unwrap(),
+            ],
+        )
+        .unwrap();
+        let quorum_path = dir.path().join("artifact.provenance.quorum.json");
+        fs::write(&quorum_path, serde_json::to_vec(&quorum).unwrap()).unwrap();
+        let quorum_report = quorum.verify(&quorum_path).unwrap();
+        let policy = ReleaseCustodyPolicy {
+            schema: 1,
+            package: Some("astragrid".to_owned()),
+            version: Some("0.1.0".to_owned()),
+            target: Some("windows-x64".to_owned()),
+            min_distinct_valid_signers: 2,
+            required_signer_ids: vec![one.identity().id.clone()],
+            allowed_signer_ids: vec![one.identity().id.clone(), two.identity().id.clone()],
+            require_clean_git: true,
+        };
+
+        let report = policy.verify(&provenance, &quorum_report).unwrap();
+
+        assert!(report.valid);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.name == "required_signers")
+        );
+    }
+
+    #[test]
+    fn rejects_release_custody_policy_missing_required_signer() {
+        let dir = tempdir().unwrap();
+        let provenance_path = dir.path().join("artifact.provenance.json");
+        let provenance = PackageProvenance {
+            schema: 1,
+            package: "astragrid".to_owned(),
+            version: "0.1.0".to_owned(),
+            target: "windows-x64".to_owned(),
+            generated_at: "2026-05-07T00:00:00Z".to_owned(),
+            artifact: None,
+            binary: Some(ProvenanceFile {
+                path: PathBuf::from("astragrid.exe"),
+                sha256: "00".repeat(32),
+            }),
+            included_files: Vec::new(),
+            toolchain: serde_json::Value::Null,
+            git: serde_json::json!({"dirty": false}),
+        };
+        fs::write(&provenance_path, serde_json::to_vec(&provenance).unwrap()).unwrap();
+        let signer = OperatorKeypair::generate("release-one", astragrid_core::Role::Operator);
+        let quorum = ProvenanceQuorumEnvelope::new(
+            1,
+            vec![ProvenanceSignatureEnvelope::sign_file(&provenance_path, &signer).unwrap()],
+        )
+        .unwrap();
+        let quorum_path = dir.path().join("artifact.provenance.quorum.json");
+        fs::write(&quorum_path, serde_json::to_vec(&quorum).unwrap()).unwrap();
+        let quorum_report = quorum.verify(&quorum_path).unwrap();
+        let policy = ReleaseCustodyPolicy {
+            schema: 1,
+            package: Some("astragrid".to_owned()),
+            version: None,
+            target: None,
+            min_distinct_valid_signers: 1,
+            required_signer_ids: vec!["missing-signer".to_owned()],
+            allowed_signer_ids: Vec::new(),
+            require_clean_git: true,
+        };
+
+        let report = policy.verify(&provenance, &quorum_report).unwrap();
+
+        assert!(!report.valid);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.name == "required_signers"
+                    && check.status == ReleaseCustodyPolicyCheckStatus::Fail)
+        );
     }
 
     #[test]
