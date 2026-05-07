@@ -323,13 +323,16 @@ The package script writes both `dist\astragrid-windows-x64-<version>.zip` and
 `dist\astragrid-windows-x64-<version>.provenance.json`.
 
 The zip includes `START-ASTRAGRID.cmd` for double-click launches and
-`VERIFY-ASTRAGRID.ps1` for a local executable smoke test after extraction.
+`VERIFY-ASTRAGRID.ps1` for a local executable smoke test after extraction. It also includes
+`INSTALL-ASTRAGRID.ps1`, which installs the extracted package, runs a version smoke, and writes
+`astragrid-install.json`.
 
 Verify the generated checksums before sharing the package:
 
 ```powershell
 cargo run -q -p astragrid -- provenance verify --input dist\astragrid-windows-x64-0.1.0.provenance.json
 cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-x64-0.1.0.provenance.json
+.\tools\local\package-smoke.ps1 -Artifact dist\astragrid-windows-x64-0.1.0.zip
 tar -tf dist\astragrid-windows-x64-0.1.0.zip
 ```
 
@@ -346,3 +349,32 @@ cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-
 cargo run -q -p astragrid -- ops release-evidence-pack --output-dir dist\release-evidence --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json --policy dist\astragrid-windows-x64-0.1.0.provenance.release-policy.json
 cargo run -q -p astragrid -- ops readiness-gate --ledger data\mission.agl --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json --policy dist\astragrid-windows-x64-0.1.0.provenance.release-policy.json --cycles 1
 ```
+
+## Local Install and Artifact Retention
+
+Install a release build from source into the user-local AstraGrid bin directory:
+
+```powershell
+.\tools\local\install.ps1 -SkipStartMenuShortcut
+```
+
+Install from an extracted release zip:
+
+```powershell
+.\INSTALL-ASTRAGRID.ps1 -InstallDir "$env:LOCALAPPDATA\AstraGrid\bin" -SkipStartMenuShortcut
+```
+
+Report cleanup candidates without deleting anything:
+
+```powershell
+cargo run -q -p astragrid -- ops artifact-retention --root . --max-cache-age-days 14 --keep-dist-releases 2
+```
+
+Delete only the reported generated artifacts after reviewing the dry run:
+
+```powershell
+cargo run -q -p astragrid -- ops artifact-retention --root . --max-cache-age-days 14 --keep-dist-releases 2 --include-target-cache --delete
+```
+
+The retention command refuses paths outside the workspace root and never deletes anything without
+`--delete`.

@@ -52,6 +52,10 @@ evidence-to-command workflow drafting, and a CLI.
 - Release evidence pack export with checksums, healthy doctor output, and handoff manifest.
 - Finite readiness gate for repeated workspace and release doctor cycles.
 - Double-click friendly Windows launcher guidance and packaged executable smoke helper.
+- Packaged Windows installer script with version smoke and install manifest output.
+- Package smoke automation that extracts, verifies, launches, and installer-checks the release zip.
+- Dry-run-first artifact retention command for cache, old dist releases, and optional target build cache cleanup.
+- No-fake A-to-Z master implementation plan with external trust and hardware gates called out.
 - Payload size limit and deterministic payload hashing.
 - Release provenance verification with fail-closed SHA-256 checks for packaged artifacts.
 - Optional operator-signed provenance envelopes for release custody.
@@ -119,4 +123,5 @@ AstraGrid is built around four non-negotiables:
 
 ## Roadmap
 
-See `docs/roadmap.md` for the completed phase checklist and the next operator-hardening targets.
+See `docs/roadmap.md` for the completed phase checklist and `docs/a-to-z-master-plan.md` for
+the no-fake capability gates.

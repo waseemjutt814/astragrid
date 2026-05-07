@@ -840,6 +840,21 @@ enum OpsCommands {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Report and optionally delete safe generated artifacts under one workspace root.
+    ArtifactRetention {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 14)]
+        max_cache_age_days: i64,
+        #[arg(long, default_value_t = 2)]
+        keep_dist_releases: usize,
+        #[arg(long, default_value_t = false)]
+        include_target_cache: bool,
+        #[arg(long, default_value_t = false)]
+        delete: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2055,6 +2070,26 @@ fn main() -> Result<()> {
                 }
                 Ok(())
             }
+            OpsCommands::ArtifactRetention {
+                root,
+                max_cache_age_days,
+                keep_dist_releases,
+                include_target_cache,
+                delete,
+                output,
+            } => {
+                let report = run_artifact_retention(ArtifactRetentionRequest {
+                    root,
+                    max_cache_age_days,
+                    keep_dist_releases,
+                    include_target_cache,
+                    delete,
+                })?;
+                if let Some(output) = output {
+                    write_json_file(&output, &report)?;
+                }
+                print_json(&report)
+            }
         },
         Commands::Doctor { command } => match command {
             DoctorCommands::Workspace {
@@ -2515,6 +2550,14 @@ struct ReadinessGateRequest {
     cycles: u32,
     interval_seconds: u64,
     fail_on_warning: bool,
+}
+
+struct ArtifactRetentionRequest {
+    root: PathBuf,
+    max_cache_age_days: i64,
+    keep_dist_releases: usize,
+    include_target_cache: bool,
+    delete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3430,6 +3473,257 @@ fn run_readiness_gate(request: ReadinessGateRequest) -> Result<Value> {
     }))
 }
 
+fn run_artifact_retention(request: ArtifactRetentionRequest) -> Result<Value> {
+    if request.max_cache_age_days < 0 {
+        bail!("--max-cache-age-days must be zero or greater");
+    }
+    let root = request
+        .root
+        .canonicalize()
+        .with_context(|| format!("retention root does not exist: {}", request.root.display()))?;
+    if !root.is_dir() {
+        bail!("retention root must be a directory: {}", root.display());
+    }
+
+    let mut candidates = Vec::new();
+    collect_cache_retention_candidates(&root, request.max_cache_age_days, &mut candidates)?;
+    collect_dist_retention_candidates(&root, request.keep_dist_releases, &mut candidates)?;
+    if request.include_target_cache {
+        collect_target_cache_candidates(&root, &mut candidates);
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut items = Vec::new();
+    let mut total_candidate_bytes = 0_u64;
+    let mut deleted_count = 0_usize;
+    for (path, reason) in candidates {
+        if !path.exists() {
+            continue;
+        }
+        let canonical = safe_retention_path(&root, &path)?;
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&canonical)
+            .with_context(|| format!("failed to inspect {}", canonical.display()))?;
+        let bytes = path_size_bytes(&canonical)?;
+        total_candidate_bytes = total_candidate_bytes.saturating_add(bytes);
+        let kind = retention_path_kind(&metadata);
+        let modified_at = metadata.modified().ok().map(|time| {
+            let timestamp: OffsetDateTime = time.into();
+            timestamp.to_string()
+        });
+
+        let mut deleted = false;
+        if request.delete {
+            delete_retention_path(&canonical, &metadata)?;
+            deleted = true;
+            deleted_count += 1;
+        }
+
+        let relative = canonical
+            .strip_prefix(&root)
+            .unwrap_or(&canonical)
+            .to_string_lossy()
+            .replace('\\', "/");
+        items.push(json!({
+            "path": relative,
+            "kind": kind,
+            "reason": reason,
+            "bytes": bytes,
+            "modified_at": modified_at,
+            "deleted": deleted,
+        }));
+    }
+    items.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["path"].as_str().unwrap_or_default())
+    });
+
+    Ok(json!({
+        "root": root,
+        "delete": request.delete,
+        "max_cache_age_days": request.max_cache_age_days,
+        "keep_dist_releases": request.keep_dist_releases,
+        "include_target_cache": request.include_target_cache,
+        "candidate_count": items.len(),
+        "deleted_count": deleted_count,
+        "total_candidate_bytes": total_candidate_bytes,
+        "candidates": items,
+    }))
+}
+
+fn collect_cache_retention_candidates(
+    root: &Path,
+    max_cache_age_days: i64,
+    candidates: &mut Vec<(PathBuf, String)>,
+) -> Result<()> {
+    let cache_dir = root.join(".cache");
+    if !cache_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&cache_dir)? {
+        let path = entry?.path();
+        let Some(age_days) = retention_age_days(&path) else {
+            continue;
+        };
+        if age_days >= max_cache_age_days {
+            candidates.push((
+                path,
+                format!(
+                    "cache entry is {age_days} days old; policy keeps {max_cache_age_days} days"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_dist_retention_candidates(
+    root: &Path,
+    keep_dist_releases: usize,
+    candidates: &mut Vec<(PathBuf, String)>,
+) -> Result<()> {
+    let dist = root.join("dist");
+    if !dist.is_dir() {
+        return Ok(());
+    }
+    let mut releases = Vec::new();
+    for entry in fs::read_dir(&dist)? {
+        let path = entry?.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if file_name.starts_with("astragrid-") && file_name.ends_with(".zip") {
+            let modified = fs::symlink_metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            releases.push((path, modified));
+        }
+    }
+    releases.sort_by(|left, right| right.1.cmp(&left.1));
+    for (path, _) in releases.into_iter().skip(keep_dist_releases) {
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| "astragrid-release".to_owned());
+        candidates.push((
+            path,
+            format!(
+                "dist release is older than the latest {keep_dist_releases} retained package(s)"
+            ),
+        ));
+        let related = [
+            format!("{stem}.provenance.json"),
+            format!("{stem}.provenance.sig.json"),
+            format!("{stem}.provenance.quorum.json"),
+            format!("{stem}.provenance.release-policy.json"),
+            format!("{stem}.provenance.custody-manifest.json"),
+        ];
+        for name in related {
+            let related_path = dist.join(name);
+            if related_path.exists() {
+                candidates.push((
+                    related_path,
+                    format!(
+                        "custody file belongs to a dist release older than the latest {keep_dist_releases} retained package(s)"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_target_cache_candidates(root: &Path, candidates: &mut Vec<(PathBuf, String)>) {
+    let reason = "target build cache selected by --include-target-cache".to_owned();
+    for relative in [
+        "target/debug",
+        "target/doc",
+        "target/tmp",
+        "target/release/build",
+        "target/release/deps",
+        "target/release/examples",
+        "target/release/incremental",
+        "target/release/.fingerprint",
+    ] {
+        let path = root.join(relative);
+        if path.exists() {
+            candidates.push((path, reason.clone()));
+        }
+    }
+}
+
+fn safe_retention_path(root: &Path, path: &Path) -> Result<PathBuf> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize retention path {}", path.display()))?;
+    if canonical == root {
+        bail!(
+            "retention refuses to delete workspace root {}",
+            root.display()
+        );
+    }
+    if !canonical.starts_with(root) {
+        bail!(
+            "retention path escapes workspace root: {}",
+            canonical.display()
+        );
+    }
+    Ok(canonical)
+}
+
+fn retention_age_days(path: &Path) -> Option<i64> {
+    let modified = fs::symlink_metadata(path).ok()?.modified().ok()?;
+    let elapsed = std::time::SystemTime::now().duration_since(modified).ok()?;
+    Some((elapsed.as_secs() / 86_400) as i64)
+}
+
+fn path_size_bytes(path: &Path) -> Result<u64> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if metadata.is_dir() {
+        let mut total = 0_u64;
+        for entry in fs::read_dir(path)? {
+            total = total.saturating_add(path_size_bytes(&entry?.path())?);
+        }
+        return Ok(total);
+    }
+    Ok(0)
+}
+
+fn retention_path_kind(metadata: &fs::Metadata) -> &'static str {
+    if metadata.file_type().is_symlink() {
+        "symlink"
+    } else if metadata.is_dir() {
+        "directory"
+    } else if metadata.is_file() {
+        "file"
+    } else {
+        "other"
+    }
+}
+
+fn delete_retention_path(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        fs::remove_file(path).with_context(|| format!("failed to delete {}", path.display()))
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("failed to delete {}", path.display()))
+    } else {
+        bail!(
+            "retention cannot delete unsupported path type: {}",
+            path.display()
+        );
+    }
+}
+
 fn resolve_from_base(base: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -3700,14 +3994,15 @@ mod tests {
     use tempfile::{NamedTempFile, tempdir};
 
     use super::{
-        Cli, Commands, DashboardCommands, DoctorCommands, GeoCommands, IdentityCommands,
-        OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands, ReadinessGateRequest,
-        RecommendCommands, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
-        acceptance_scenario, build_registry_trust_bundle, default_signature_output_path,
-        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
-        inject_meta_refresh, read_payload, render_acceptance_script, render_default_launcher,
-        run_readiness_gate, sha256_file_hex, verify_registry_trust_bundle, write_acceptance_pack,
-        write_release_custody_pack, write_release_evidence_pack,
+        ArtifactRetentionRequest, Cli, Commands, DashboardCommands, DoctorCommands, GeoCommands,
+        IdentityCommands, OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands,
+        ReadinessGateRequest, RecommendCommands, ReleaseCustodyPackRequest,
+        ReleaseEvidencePackRequest, acceptance_scenario, build_registry_trust_bundle,
+        default_signature_output_path, export_ops_bundle, http_request_path, http_response,
+        import_registry_trust_bundle, inject_meta_refresh, read_payload, render_acceptance_script,
+        render_default_launcher, run_artifact_retention, run_readiness_gate, sha256_file_hex,
+        verify_registry_trust_bundle, write_acceptance_pack, write_release_custody_pack,
+        write_release_evidence_pack,
     };
 
     #[test]
@@ -4248,6 +4543,46 @@ mod tests {
     }
 
     #[test]
+    fn parses_ops_artifact_retention_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "ops",
+            "artifact-retention",
+            "--root",
+            ".",
+            "--max-cache-age-days",
+            "0",
+            "--keep-dist-releases",
+            "1",
+            "--include-target-cache",
+            "--output",
+            "ops/retention.json",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Ops {
+                command:
+                    OpsCommands::ArtifactRetention {
+                        root,
+                        max_cache_age_days,
+                        keep_dist_releases,
+                        include_target_cache,
+                        output,
+                        ..
+                    },
+            } => {
+                assert_eq!(root, PathBuf::from("."));
+                assert_eq!(max_cache_age_days, 0);
+                assert_eq!(keep_dist_releases, 1);
+                assert!(include_target_cache);
+                assert_eq!(output, Some(PathBuf::from("ops/retention.json")));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
     fn writes_acceptance_pack_files() {
         let dir = tempdir().unwrap();
 
@@ -4617,6 +4952,75 @@ mod tests {
 
         assert!(report["healthy"].as_bool().unwrap());
         assert_eq!(report["status"], "healthy");
+    }
+
+    #[test]
+    fn artifact_retention_dry_run_keeps_cache_files() {
+        let dir = tempdir().unwrap();
+        let cache_dir = dir.path().join(".cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let cache_file = cache_dir.join("package-smoke.log");
+        fs::write(&cache_file, b"smoke").unwrap();
+
+        let report = run_artifact_retention(ArtifactRetentionRequest {
+            root: dir.path().to_path_buf(),
+            max_cache_age_days: 0,
+            keep_dist_releases: 2,
+            include_target_cache: false,
+            delete: false,
+        })
+        .unwrap();
+
+        assert_eq!(report["candidate_count"], 1);
+        assert_eq!(report["deleted_count"], 0);
+        assert!(cache_file.exists());
+    }
+
+    #[test]
+    fn artifact_retention_delete_removes_selected_cache_files() {
+        let dir = tempdir().unwrap();
+        let cache_dir = dir.path().join(".cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let cache_file = cache_dir.join("old-cache.bin");
+        fs::write(&cache_file, b"cache").unwrap();
+
+        let report = run_artifact_retention(ArtifactRetentionRequest {
+            root: dir.path().to_path_buf(),
+            max_cache_age_days: 0,
+            keep_dist_releases: 2,
+            include_target_cache: false,
+            delete: true,
+        })
+        .unwrap();
+
+        assert_eq!(report["candidate_count"], 1);
+        assert_eq!(report["deleted_count"], 1);
+        assert!(!cache_file.exists());
+    }
+
+    #[test]
+    fn artifact_retention_keeps_latest_dist_release() {
+        let dir = tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(dist.join("astragrid-windows-x64-0.1.0.zip"), b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(dist.join("astragrid-windows-x64-0.2.0.zip"), b"new").unwrap();
+
+        let report = run_artifact_retention(ArtifactRetentionRequest {
+            root: dir.path().to_path_buf(),
+            max_cache_age_days: 14,
+            keep_dist_releases: 1,
+            include_target_cache: false,
+            delete: false,
+        })
+        .unwrap();
+
+        assert_eq!(report["candidate_count"], 1);
+        assert_eq!(
+            report["candidates"][0]["path"],
+            "dist/astragrid-windows-x64-0.1.0.zip"
+        );
     }
 
     fn write_test_custody_files(dir: &std::path::Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {

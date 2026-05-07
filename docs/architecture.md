@@ -30,6 +30,8 @@ release provenance -> custody pack -> healthy release doctor gate
 signed custody artifacts -> release evidence pack -> checksum manifest
 workspace/release doctors -> finite readiness gate
 Windows package -> launcher/smoke helper -> executable startup verification
+release package -> package smoke -> install manifest
+workspace artifacts -> artifact retention dry run -> explicit cleanup
 ```
 
 ## Mission Ledger
@@ -245,6 +247,17 @@ observation runs while still reporting the exact warning and failure totals.
 The Windows package includes `START-ASTRAGRID.cmd` and `VERIFY-ASTRAGRID.ps1`. The executable also
 prints startup guidance when launched without a subcommand, so double-click launches and first-run
 PowerShell checks do not look like a broken binary.
+
+`INSTALL-ASTRAGRID.ps1` installs an extracted package into a user-local bin directory, runs a
+version smoke against the installed binary, optionally updates the user PATH, optionally writes a
+Start Menu shortcut, and records the result in `astragrid-install.json`. `tools/local/package-smoke.ps1`
+extracts the zip into `.cache`, checks required runtime files, runs version and no-argument launch
+smokes, runs the packaged verifier, and verifies installer manifest output before deleting the
+disposable extraction by default.
+
+`ops artifact-retention` provides a dry-run-first cleanup policy for generated workspace artifacts.
+It canonicalizes one workspace root, reports byte counts for `.cache` entries, old dist releases,
+and optional target build cache directories, and deletes only when operators pass `--delete`.
 
 ## Worker Service Kits
 

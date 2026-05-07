@@ -48,3 +48,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tools/local/package-release.ps1
+
+      - name: Artifact retention smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo run -q -p astragrid -- ops artifact-retention --root . --max-cache-age-days 14 --keep-dist-releases 2

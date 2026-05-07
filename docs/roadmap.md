@@ -70,3 +70,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add a packaged `VERIFY-ASTRAGRID.ps1` executable smoke helper.
 - [x] Include launcher and smoke helper files in package provenance metadata.
 - [x] Add parser/runtime tests for no-argument launcher behavior.
+
+## Next Wave: Installer, Smoke, and Artifact Retention
+
+- [x] Add a no-fake A-to-Z master implementation plan with explicit external-infrastructure gates.
+- [x] Add a packaged Windows installer script that installs the extracted release, runs a version smoke, and writes an install manifest.
+- [x] Upgrade the local source installer to install the same runtime helper set and write a manifest.
+- [x] Add package smoke automation that extracts the zip, verifies required files, runs no-arg/version smoke, runs the verifier, and checks installer output.
+- [x] Add an `ops artifact-retention` CLI gate with dry-run-by-default reporting, explicit deletion, dist retention, cache retention, and optional target-cache cleanup.

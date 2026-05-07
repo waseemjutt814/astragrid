@@ -2,7 +2,8 @@ param(
     [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
     [string]$Configuration = "release",
     [string]$SigningIdentity,
-    [string]$PassphraseFile
+    [string]$PassphraseFile,
+    [switch]$SkipPackageSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,14 +53,15 @@ try {
 
     $packageLauncher = Join-Path $ProjectRoot "tools\package\START-ASTRAGRID.cmd"
     $packageVerifier = Join-Path $ProjectRoot "tools\package\VERIFY-ASTRAGRID.ps1"
+    $packageInstaller = Join-Path $ProjectRoot "tools\package\INSTALL-ASTRAGRID.ps1"
     $packageReadme = Join-Path $ProjectRoot "tools\package\WINDOWS-README.txt"
-    foreach ($packageFile in @($packageLauncher, $packageVerifier, $packageReadme)) {
+    foreach ($packageFile in @($packageLauncher, $packageVerifier, $packageInstaller, $packageReadme)) {
         if (-not (Test-Path -LiteralPath $packageFile)) {
             throw "package helper not found: $packageFile"
         }
     }
 
-    Compress-Archive -Path $binary, "README.md", "SECURITY.md", "LICENSE", $packageLauncher, $packageVerifier, $packageReadme -DestinationPath $artifact
+    Compress-Archive -Path $binary, "README.md", "SECURITY.md", "LICENSE", $packageLauncher, $packageVerifier, $packageInstaller, $packageReadme -DestinationPath $artifact
 
     $provenancePath = Join-Path $dist "astragrid-windows-x64-$version.provenance.json"
     if (Test-Path -LiteralPath $provenancePath) {
@@ -108,6 +110,7 @@ try {
             "LICENSE",
             "tools\package\START-ASTRAGRID.cmd",
             "tools\package\VERIFY-ASTRAGRID.ps1",
+            "tools\package\INSTALL-ASTRAGRID.ps1",
             "tools\package\WINDOWS-README.txt"
         )
         toolchain = [ordered]@{
@@ -145,6 +148,17 @@ try {
             throw "release custody pack failed"
         }
         Write-Host "Release custody pack $dist"
+    }
+
+    if (-not $SkipPackageSmoke) {
+        $smokeScript = Join-Path $ProjectRoot "tools\local\package-smoke.ps1"
+        if (-not (Test-Path -LiteralPath $smokeScript)) {
+            throw "package smoke helper not found: $smokeScript"
+        }
+        & powershell -ExecutionPolicy Bypass -File $smokeScript -ProjectRoot $ProjectRoot -Artifact $artifact
+        if ($LASTEXITCODE -ne 0) {
+            throw "package smoke failed"
+        }
     }
 }
 finally {
