@@ -12,17 +12,17 @@
         "verification": {
           "checks": [
             {
-              "actual_sha256": "8b44d9c1733f33db31d1d86249a6407ba2b87e50388ef55626843a5566d47f95",
+              "actual_sha256": "762efff670e1f96b12525d6e8d4144c1b4a9d49a1c0c9782ed12d0731bbf09a0",
               "detail": "sha256 matches",
-              "expected_sha256": "8b44d9c1733f33db31d1d86249a6407ba2b87e50388ef55626843a5566d47f95",
+              "expected_sha256": "762efff670e1f96b12525d6e8d4144c1b4a9d49a1c0c9782ed12d0731bbf09a0",
               "name": "artifact",
               "path": "dist\\astragrid-windows-x64-0.1.0.zip",
               "status": "match"
             },
             {
-              "actual_sha256": "4b16f9e30e8c3f2210c215b6dd34f208b05ef05b72a6e99cc2a18fe87166d5d1",
+              "actual_sha256": "1d2dc04dd9cecf99b0fa74454094bf62cf474dc26b1a1d6b6a64a974aec2759a",
               "detail": "sha256 matches",
-              "expected_sha256": "4b16f9e30e8c3f2210c215b6dd34f208b05ef05b72a6e99cc2a18fe87166d5d1",
+              "expected_sha256": "1d2dc04dd9cecf99b0fa74454094bf62cf474dc26b1a1d6b6a64a974aec2759a",
               "name": "binary",
               "path": "dist\\..\\target\\release\\astragrid.exe",
               "status": "match"
@@ -38,16 +38,16 @@
       "detail": {
         "path": "dist\\astragrid-windows-x64-0.1.0.provenance.sig.json",
         "verification": {
-          "actual_sha256": "e0e9b2b7722a8ecf3042080eddbf5aa1fdba4b921a9f0ec30c6e09afb513f4e2",
+          "actual_sha256": "6666481890614bb5da76368589ec442063ce91ffac057a65882c20c993c1ffa6",
           "detail": "provenance signature is valid",
-          "expected_sha256": "e0e9b2b7722a8ecf3042080eddbf5aa1fdba4b921a9f0ec30c6e09afb513f4e2",
+          "expected_sha256": "6666481890614bb5da76368589ec442063ce91ffac057a65882c20c993c1ffa6",
           "provenance_hash_match": true,
           "provenance_path": "dist\\astragrid-windows-x64-0.1.0.provenance.json",
           "signature_valid": true,
           "signer": {
-            "id": "agop_525141ba30d5f75ce402a5fe",
+            "id": "agop_27ed6438183147e5e575ba83",
             "name": "release-custody",
-            "public_key": "30d76be2c5237acd348482a02a5f289141f46d8c3290b17b00a4f0fca1b24f9c",
+            "public_key": "dfd534ba020eb231fecb298d100841c13227129c5267205bc3ffbc2f32d87576",
             "role": "operator"
           },
           "valid": true
@@ -64,16 +64,16 @@
           "distinct_valid_signers": 1,
           "reports": [
             {
-              "actual_sha256": "e0e9b2b7722a8ecf3042080eddbf5aa1fdba4b921a9f0ec30c6e09afb513f4e2",
+              "actual_sha256": "6666481890614bb5da76368589ec442063ce91ffac057a65882c20c993c1ffa6",
               "detail": "provenance signature is valid",
-              "expected_sha256": "e0e9b2b7722a8ecf3042080eddbf5aa1fdba4b921a9f0ec30c6e09afb513f4e2",
+              "expected_sha256": "6666481890614bb5da76368589ec442063ce91ffac057a65882c20c993c1ffa6",
               "provenance_hash_match": true,
               "provenance_path": "dist\\astragrid-windows-x64-0.1.0.provenance.json",
               "signature_valid": true,
               "signer": {
-                "id": "agop_525141ba30d5f75ce402a5fe",
+                "id": "agop_27ed6438183147e5e575ba83",
                 "name": "release-custody",
-                "public_key": "30d76be2c5237acd348482a02a5f289141f46d8c3290b17b00a4f0fca1b24f9c",
+                "public_key": "dfd534ba020eb231fecb298d100841c13227129c5267205bc3ffbc2f32d87576",
                 "role": "operator"
               },
               "valid": true
@@ -143,7 +143,7 @@
             {
               "detail": {
                 "required": [
-                  "agop_525141ba30d5f75ce402a5fe"
+                  "agop_27ed6438183147e5e575ba83"
                 ]
               },
               "name": "required_signers",
@@ -152,7 +152,7 @@
             {
               "detail": {
                 "allowed": [
-                  "agop_525141ba30d5f75ce402a5fe"
+                  "agop_27ed6438183147e5e575ba83"
                 ]
               },
               "name": "allowed_signers",
