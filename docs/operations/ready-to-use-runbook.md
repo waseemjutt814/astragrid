@@ -90,18 +90,19 @@ Serve the read-only local console from verified workspace artifacts:
 
 ```powershell
 .\target\release\astragrid.exe store ingest --ledger ops\field\data\mission.agl --db ops\field\data\mission.db
-.\target\release\astragrid.exe ui serve --ledger ops\field\data\mission.agl --db ops\field\data\mission.db --approvals ops\field\data\approvals.agl --bind 127.0.0.1:17882
+'operator-console-local-token' | Set-Content -Encoding UTF8 ops\field\data\operator-console.token
+.\target\release\astragrid.exe ui serve --ledger ops\field\data\mission.agl --db ops\field\data\mission.db --approvals ops\field\data\approvals.agl --auth-token-file ops\field\data\operator-console.token --bind 127.0.0.1:17882
 ```
 
-The app is available at `http://127.0.0.1:17882/console.html`. Smoke the API without a browser:
+The server prints a token-bearing local URL. Smoke the API without a browser:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:17882/api/summary
-Invoke-WebRequest http://127.0.0.1:17882/console.html | Select-Object -ExpandProperty StatusCode
+Invoke-RestMethod "http://127.0.0.1:17882/api/summary?token=operator-console-local-token"
+Invoke-WebRequest "http://127.0.0.1:17882/console.html?token=operator-console-local-token" | Select-Object -ExpandProperty StatusCode
 ```
 
-The console is read-only. Mission changes still go through signed CLI commands, approvals, policy
-packs, and registry checks.
+The console is token-gated and read-only. Mission changes still go through signed CLI commands,
+approvals, policy packs, and registry checks.
 
 ## Backup
 
@@ -275,5 +276,7 @@ Delete only after reviewing the report:
   times out, exceeds output limits, or cites unknown evidence.
 - Operator console failure: `ui serve` fails before binding when the ledger, store, approvals, peer
   queue, or evidence inputs cannot be verified or loaded.
+- Operator console unauthorized: browser/API requests without the matching token return `401`
+  without exposing mission data.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

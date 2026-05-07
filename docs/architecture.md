@@ -338,11 +338,12 @@ each request, and injects browser refresh metadata without changing offline expo
 
 `astragrid-ui` builds on the dashboard document and serves a lightweight loopback operator console
 without introducing a placeholder web stack. `ui serve` binds to the requested address, defaults to
-loopback, rebuilds the verified dashboard document for each request, and routes the same in-memory
-document through `/console.html`, `/api/summary`, `/api/events`, `/api/approvals`, `/api/audit`,
-`/api/peer-health`, `/api/dashboard`, and `/healthz`. The browser app fetches those local endpoints
-to render metrics, tabs, audit rows, and peer health. The console is read-only; writes still happen
-through the signed CLI workflows.
+loopback, requires a URL-safe token unless operators explicitly pass `--no-auth`, rebuilds the
+verified dashboard document for each request, and routes the same in-memory document through
+`/console.html`, `/api/summary`, `/api/events`, `/api/approvals`, `/api/audit`, `/api/peer-health`,
+`/api/dashboard`, and `/healthz`. The browser app fetches those local endpoints with the same token
+and escapes API values before rendering tables. The console is read-only; writes still happen through
+the signed CLI workflows.
 
 ## Operator Handoff Bundle
 

@@ -183,5 +183,6 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add `astragrid-ui` as a Rust route/render crate instead of a placeholder app shell.
 - [x] Add `ui serve` for a loopback visual console that rebuilds verified mission data per request.
 - [x] Expose read-only JSON endpoints for summary, events, approvals, audit, peer health, full dashboard data, and health.
-- [x] Add parser, route, escaping, refresh, and unknown-route tests.
-- [x] Extend the acceptance pack to smoke `/api/summary` and `/console.html` against real mission artifacts.
+- [x] Add token-gated access by default with explicit `--no-auth` for isolated smoke runs.
+- [x] Add parser, route, token, escaping, refresh, and unknown-route tests.
+- [x] Extend the acceptance pack to smoke token-authenticated `/api/summary` and `/console.html` against real mission artifacts.

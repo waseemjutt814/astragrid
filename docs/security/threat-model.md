@@ -39,7 +39,7 @@
 - Hash-chained approval records for workflow draft review and execution.
 - Scenario runner assertions over local ledger, state, and store behavior.
 - Self-contained dashboard export from verified local artifacts.
-- API-backed loopback operator console from verified local artifacts.
+- Token-gated API-backed loopback operator console from verified local artifacts.
 - Workspace doctor checks for local artifact health.
 - Release provenance JSON with artifact and binary SHA-256 hashes.
 - Optional operator-signed release provenance envelopes.
@@ -49,7 +49,7 @@
 ## Out of Scope Until Implemented
 
 - Remote service multi-user authentication.
-- Remote browser authentication for operator consoles.
+- Remote browser authentication and multi-user web sessions for operator consoles.
 - OS-level AI runner sandbox profiles.
 - Hardware-backed keys.
 - Remote update channels.
@@ -84,7 +84,8 @@
   work directory unless an absolute path is explicitly provided.
 - Dashboard export must escape operator-provided text before writing HTML.
 - Operator console endpoints must be read-only and derived from verified local artifacts loaded for
-  each request.
+  each request. Token-gated routes must reject missing or wrong tokens before returning mission
+  data, and rendered API values must be escaped before entering table markup.
 - Doctor checks must be read-only.
 - Release provenance must include toolchain and checksum data for packaged artifacts.
 - Provenance verification must fail closed when any recorded artifact hash is missing or

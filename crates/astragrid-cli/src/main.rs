@@ -1233,6 +1233,15 @@ enum UiCommands {
         map_href: Option<String>,
         #[arg(long, default_value_t = 5)]
         refresh_seconds: u64,
+        /// Read a URL-safe bearer token from a local file.
+        #[arg(long)]
+        auth_token_file: Option<PathBuf>,
+        /// Provide a URL-safe bearer token directly. Prefer --auth-token-file for operations.
+        #[arg(long)]
+        auth_token: Option<String>,
+        /// Disable the operator console token gate for isolated smoke runs.
+        #[arg(long, default_value_t = false)]
+        no_auth: bool,
         /// Optional finite request count for smoke tests and supervised runs.
         #[arg(long)]
         max_requests: Option<u32>,
@@ -3068,6 +3077,9 @@ fn main() -> Result<()> {
                 evidence_bundle,
                 map_href,
                 refresh_seconds,
+                auth_token_file,
+                auth_token,
+                no_auth,
                 max_requests,
             } => print_json(&serve_operator_console(UiServeRequest {
                 ledger,
@@ -3079,6 +3091,11 @@ fn main() -> Result<()> {
                 evidence_bundle,
                 map_href,
                 refresh_seconds,
+                auth_token: resolve_operator_console_auth_token(
+                    no_auth,
+                    auth_token_file.as_ref(),
+                    auth_token.as_deref(),
+                )?,
                 max_requests,
             })?),
         },
@@ -3771,6 +3788,7 @@ struct UiServeRequest {
     evidence_bundle: Vec<PathBuf>,
     map_href: Option<String>,
     refresh_seconds: u64,
+    auth_token: Option<String>,
     max_requests: Option<u32>,
 }
 
@@ -4700,7 +4718,15 @@ fn serve_operator_console(request: UiServeRequest) -> Result<Value> {
     let listener = TcpListener::bind(&request.bind)
         .with_context(|| format!("failed to bind operator console server to {}", request.bind))?;
     let local_addr = listener.local_addr()?;
-    eprintln!("AstraGrid operator console serving at http://{local_addr}/console.html");
+    if let Some(token) = request.auth_token.as_deref() {
+        eprintln!(
+            "AstraGrid operator console serving at http://{local_addr}/console.html?token={token}"
+        );
+    } else {
+        eprintln!(
+            "AstraGrid operator console serving at http://{local_addr}/console.html (auth disabled)"
+        );
+    }
     let mut served = 0_u32;
     loop {
         let (mut stream, _) = listener.accept()?;
@@ -4715,6 +4741,7 @@ fn serve_operator_console(request: UiServeRequest) -> Result<Value> {
     }
     Ok(json!({
         "bind": local_addr.to_string(),
+        "auth": if request.auth_token.is_some() { "token" } else { "disabled" },
         "requests": served,
     }))
 }
@@ -4734,7 +4761,12 @@ fn handle_operator_console_stream(request: &UiServeRequest, stream: &mut TcpStre
         &request.evidence_bundle,
         request.map_href.clone(),
     )?;
-    let console_response = route_operator_console(&dashboard, path, request.refresh_seconds)?;
+    let console_response = route_operator_console(
+        &dashboard,
+        path,
+        request.refresh_seconds,
+        request.auth_token.as_deref(),
+    )?;
     let response = http_response(
         console_response.status,
         console_response.content_type,
@@ -4742,6 +4774,54 @@ fn handle_operator_console_stream(request: &UiServeRequest, stream: &mut TcpStre
     );
     stream.write_all(&response)?;
     stream.flush()?;
+    Ok(())
+}
+
+fn resolve_operator_console_auth_token(
+    no_auth: bool,
+    auth_token_file: Option<&PathBuf>,
+    auth_token: Option<&str>,
+) -> Result<Option<String>> {
+    if no_auth {
+        if auth_token_file.is_some() || auth_token.is_some() {
+            bail!("--no-auth cannot be combined with --auth-token or --auth-token-file");
+        }
+        return Ok(None);
+    }
+    let token = match (auth_token_file, auth_token) {
+        (Some(_), Some(_)) => bail!("use only one of --auth-token or --auth-token-file"),
+        (Some(path), None) => read_text_file(path)?
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned(),
+        (None, Some(token)) => token.trim().to_owned(),
+        (None, None) => {
+            let mut bytes = [0_u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            hex::encode(bytes)
+        }
+    };
+    validate_operator_console_auth_token(&token)?;
+    Ok(Some(token))
+}
+
+fn validate_operator_console_auth_token(token: &str) -> Result<()> {
+    if token.len() < 16 {
+        bail!("operator console auth token must be at least 16 characters");
+    }
+    if token.len() > 256 {
+        bail!("operator console auth token must be at most 256 characters");
+    }
+    if !token
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
+    {
+        bail!(
+            "operator console auth token must be URL-safe ASCII: letters, digits, '-', '_', '.', '~'"
+        );
+    }
     Ok(())
 }
 
@@ -6051,6 +6131,8 @@ try {{
     $federationBind = "127.0.0.1:$federationPort"
     $operatorConsolePort = Get-Random -Minimum 30001 -Maximum 40000
     $operatorConsoleBind = "127.0.0.1:$operatorConsolePort"
+    $operatorConsoleToken = 'acceptance-console-token'
+    $operatorConsoleTokenFile = Join-Path $Run 'operator-console.token'
     $mergeLeft = Join-Path $Run 'merge-left.agl'
     $mergeRight = Join-Path $Run 'merge-right.agl'
     $mergeOutput = Join-Path $Run 'merge-output.agl'
@@ -6068,6 +6150,7 @@ try {{
     '{{"note":"right branch field note"}}' | Set-Content -Encoding UTF8 $mergeRightPayload
     'acceptance federation shared key' | Set-Content -Encoding UTF8 $federationKey
     'acceptance federation peer passphrase' | Set-Content -Encoding UTF8 $federationPassphrase
+    $operatorConsoleToken | Set-Content -Encoding UTF8 $operatorConsoleTokenFile
 @'
 param([string]$State)
 if (-not (Test-Path $State)) {{
@@ -6184,15 +6267,15 @@ if ($request.evidence.Count -lt 1) {{ exit 12 }}
     Invoke-AstraGrid dashboard export --ledger $ledger --db $db --approvals $approvals --output $dashboard --title {quoted_title}
     if (-not (Select-String -LiteralPath $dashboard -Pattern 'Operator Audit Timeline' -Quiet)) {{ throw 'dashboard audit timeline missing' }}
     $operatorConsoleServer = Start-Job -ScriptBlock {{
-        param($ProjectRoot, $Bind, $Ledger, $Db, $Approvals, $Title)
+        param($ProjectRoot, $Bind, $Ledger, $Db, $Approvals, $Title, $TokenFile)
         Set-Location $ProjectRoot
-        $operatorOutput = cargo run -q -p astragrid -- ui serve --bind $Bind --ledger $Ledger --db $Db --approvals $Approvals --title $Title --max-requests 2 --refresh-seconds 0 2>&1
+        $operatorOutput = cargo run -q -p astragrid -- ui serve --bind $Bind --ledger $Ledger --db $Db --approvals $Approvals --title $Title --auth-token-file $TokenFile --max-requests 2 --refresh-seconds 0 2>&1
         if ($LASTEXITCODE -ne 0) {{ throw "operator console exited with code $LASTEXITCODE`: $operatorOutput" }}
-    }} -ArgumentList $ProjectRoot, $operatorConsoleBind, $ledger, $db, $approvals, {quoted_title}
+    }} -ArgumentList $ProjectRoot, $operatorConsoleBind, $ledger, $db, $approvals, {quoted_title}, $operatorConsoleTokenFile
     $operatorConsoleDeadline = (Get-Date).AddSeconds(30)
     while ($true) {{
         try {{
-            $operatorSummary = Invoke-RestMethod -Uri "http://$operatorConsoleBind/api/summary" -TimeoutSec 2
+            $operatorSummary = Invoke-RestMethod -Uri "http://$operatorConsoleBind/api/summary?token=$operatorConsoleToken" -TimeoutSec 2
             break
         }} catch {{
             if ((Get-Date) -gt $operatorConsoleDeadline) {{ throw "operator console summary API did not respond: $($_.Exception.Message)" }}
@@ -6202,7 +6285,7 @@ if ($request.evidence.Count -lt 1) {{ exit 12 }}
     if ($operatorSummary.healthy -ne $true) {{ throw 'operator console summary did not report healthy state' }}
     if ($operatorSummary.events -lt 3) {{ throw "operator console summary event count too low: $($operatorSummary.events)" }}
     if ($operatorSummary.audit_items -lt 1) {{ throw 'operator console summary did not expose audit timeline count' }}
-    $operatorConsoleHtml = Invoke-WebRequest -Uri "http://$operatorConsoleBind/console.html" -UseBasicParsing -TimeoutSec 5
+    $operatorConsoleHtml = Invoke-WebRequest -Uri "http://$operatorConsoleBind/console.html?token=$operatorConsoleToken" -UseBasicParsing -TimeoutSec 5
     if ($operatorConsoleHtml.Content -notmatch 'operator-console') {{ throw 'operator console HTML app shell missing' }}
     Receive-Job $operatorConsoleServer -Wait -ErrorAction Stop
     Invoke-AstraGrid ops bundle --ledger $ledger --db $db --approvals $approvals --identity $identity --features $features --output-dir $opsBundle --title {quoted_title}
@@ -7986,11 +8069,12 @@ mod tests {
         create_device_pairing, create_registry_quorum_proposal, default_signature_output_path,
         evaluate_policy_pack_file, export_ops_bundle, http_request_path, http_response,
         import_registry_trust_bundle, inject_meta_refresh, issue_team_session, read_json_file,
-        read_payload, render_acceptance_script, render_default_launcher, restore_workspace_backup,
-        rotate_operator_key, run_artifact_retention, run_federation_daemon, run_first_run_setup,
-        run_peer_queue_worker, run_profile_doctor, run_readiness_gate, run_worker_watchdog,
-        sha256_file_hex, sign_registry_quorum_proposal, team_append_signed, vault_append,
-        vault_init, vault_tail, vault_verify, verify_device_pairing_file, verify_policy_pack_file,
+        read_payload, render_acceptance_script, render_default_launcher,
+        resolve_operator_console_auth_token, restore_workspace_backup, rotate_operator_key,
+        run_artifact_retention, run_federation_daemon, run_first_run_setup, run_peer_queue_worker,
+        run_profile_doctor, run_readiness_gate, run_worker_watchdog, sha256_file_hex,
+        sign_registry_quorum_proposal, team_append_signed, vault_append, vault_init, vault_tail,
+        vault_verify, verify_device_pairing_file, verify_policy_pack_file,
         verify_registry_quorum_proposal_file, verify_registry_trust_bundle,
         verify_team_session_file, write_acceptance_pack, write_release_custody_pack,
         write_release_evidence_pack, write_workspace_backup,
@@ -9281,6 +9365,8 @@ mod tests {
             "127.0.0.1:18082",
             "--refresh-seconds",
             "2",
+            "--auth-token-file",
+            "data/operator-console.token",
             "--max-requests",
             "2",
         ])
@@ -9295,6 +9381,8 @@ mod tests {
                         approvals,
                         bind,
                         refresh_seconds,
+                        auth_token_file,
+                        no_auth,
                         max_requests,
                         ..
                     },
@@ -9304,10 +9392,39 @@ mod tests {
                 assert_eq!(approvals, Some(PathBuf::from("data/approvals.agl")));
                 assert_eq!(bind, "127.0.0.1:18082");
                 assert_eq!(refresh_seconds, 2);
+                assert_eq!(
+                    auth_token_file,
+                    Some(PathBuf::from("data/operator-console.token"))
+                );
+                assert!(!no_auth);
                 assert_eq!(max_requests, Some(2));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolves_operator_console_auth_tokens() {
+        let dir = tempdir().unwrap();
+        let token_file = dir.path().join("console.token");
+        fs::write(&token_file, "token-from-file-123\n").unwrap();
+
+        assert_eq!(
+            resolve_operator_console_auth_token(false, Some(&token_file), None).unwrap(),
+            Some("token-from-file-123".to_owned())
+        );
+        assert_eq!(
+            resolve_operator_console_auth_token(false, None, Some("token-from-arg-123")).unwrap(),
+            Some("token-from-arg-123".to_owned())
+        );
+        assert_eq!(
+            resolve_operator_console_auth_token(true, None, None).unwrap(),
+            None
+        );
+        assert!(resolve_operator_console_auth_token(false, None, Some("short")).is_err());
+        assert!(
+            resolve_operator_console_auth_token(true, None, Some("token-from-arg-123")).is_err()
+        );
     }
 
     #[test]

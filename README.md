@@ -62,7 +62,7 @@ and a CLI.
 - Self-contained operator dashboard export with peer health status, recent errors, and map links.
 - Operator audit timeline in dashboard exports, grouped from mission events, approvals, peer sync jobs, and evidence bundles.
 - Loopback dashboard serving that regenerates verified dashboard HTML for each request.
-- API-backed loopback operator console with summary, events, approvals, audit, peer-health, and full dashboard JSON endpoints.
+- Token-gated API-backed loopback operator console with summary, events, approvals, audit, peer-health, and full dashboard JSON endpoints.
 - Workspace doctor for ledger, state, store, key, approval, and peer queue checks.
 - Release doctor for package provenance, detached signature, and quorum readiness checks.
 - Release custody policy verification for required signer ids, allowed signer sets, clean Git state, and promotion thresholds.

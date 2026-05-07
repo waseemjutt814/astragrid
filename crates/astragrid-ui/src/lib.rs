@@ -23,12 +23,25 @@ pub fn route_operator_console(
     document: &DashboardDocument,
     path: &str,
     refresh_seconds: u64,
+    auth_token: Option<&str>,
 ) -> Result<OperatorConsoleResponse, OperatorConsoleError> {
     let normalized_path = normalized_path(path);
+    if let Some(expected_token) = auth_token
+        && !query_token_matches(path, expected_token)
+    {
+        return Ok(OperatorConsoleResponse {
+            status: "401 Unauthorized",
+            content_type: "application/json; charset=utf-8",
+            body: br#"{"status":"unauthorized","detail":"operator console token is required"}"#
+                .to_vec(),
+        });
+    }
+    let request_token = auth_token.and_then(|_| query_value(path, "token"));
     match normalized_path {
         "/" | "/app" | "/console.html" => Ok(html_response(render_operator_console(
             document,
             refresh_seconds,
+            request_token,
         ))),
         "/api/summary" => json_response(&operator_summary(document)),
         "/api/dashboard" => json_response(document),
@@ -56,9 +69,14 @@ pub fn route_operator_console(
     }
 }
 
-pub fn render_operator_console(document: &DashboardDocument, refresh_seconds: u64) -> String {
+pub fn render_operator_console(
+    document: &DashboardDocument,
+    refresh_seconds: u64,
+    api_token: Option<&str>,
+) -> String {
     let refresh_ms = refresh_seconds.saturating_mul(1000);
     let title = escape_html(&document.title);
+    let api_token = api_token.map(escape_html).unwrap_or_default();
     let mission = document
         .state
         .mission
@@ -215,7 +233,7 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
   <h1>{title}</h1>
   <div class="topline"><span id="mission-name">{mission}</span><span id="generated-at">generated {generated_at}</span></div>
 </header>
-<main id="operator-console" class="shell" data-refresh-ms="{refresh_ms}">
+<main id="operator-console" class="shell" data-refresh-ms="{refresh_ms}" data-api-token="{api_token}">
   <nav class="rail" aria-label="Operator console sections">
     <button type="button" data-tab="overview" aria-selected="true">Overview</button>
     <button type="button" data-tab="events" aria-selected="false">Mission Events</button>
@@ -287,19 +305,35 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
 <script>
 const root = document.getElementById("operator-console");
 const refreshMs = Number(root.dataset.refreshMs || "0");
+const apiToken = root.dataset.apiToken || "";
+const apiPath = (path) => {{
+  if (!apiToken) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${{path}}${{separator}}token=${{encodeURIComponent(apiToken)}}`;
+}};
 const api = async (path) => {{
-  const response = await fetch(path, {{ cache: "no-store" }});
+  const requestPath = apiPath(path);
+  const response = await fetch(requestPath, {{ cache: "no-store" }});
   if (!response.ok) throw new Error(`${{path}} returned ${{response.status}}`);
   return response.json();
 }};
 const setText = (id, value) => {{
   document.getElementById(id).textContent = value === null || value === undefined || value === "" ? "--" : String(value);
 }};
+const escapeHtml = (value) => String(value === null || value === undefined || value === "" ? "--" : value).replace(/[&<>"']/g, (character) => ({{
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  "\"": "&quot;",
+  "'": "&#39;",
+}}[character]));
+const html = (value) => ({{ html: String(value) }});
+const cell = (value) => value && typeof value === "object" && Object.hasOwn(value, "html") ? value.html : escapeHtml(value);
 const classify = (value) => value === "critical" || value === "failing" || value === "failed" ? "bad" : value === "elevated" || value === "warning" || value === "degraded" || value === "retrying" || value === "pending" ? "warn" : "";
-const pill = (value) => `<span class="pill ${{classify(String(value))}}">${{String(value || "--")}}</span>`;
-const code = (value) => `<code>${{String(value || "--")}}</code>`;
-const cells = (values) => `<tr>${{values.map((value) => `<td>${{value}}</td>`).join("")}}</tr>`;
-const emptyRow = (count, label) => `<tr><td colspan="${{count}}" class="muted">${{label}}</td></tr>`;
+const pill = (value) => html(`<span class="pill ${{classify(String(value))}}">${{escapeHtml(value)}}</span>`);
+const code = (value) => html(`<code>${{escapeHtml(value)}}</code>`);
+const cells = (values) => `<tr>${{values.map((value) => `<td>${{cell(value)}}</td>`).join("")}}</tr>`;
+const emptyRow = (count, label) => `<tr><td colspan="${{count}}" class="muted">${{escapeHtml(label)}}</td></tr>`;
 
 function tableRows(id, rows, count, render, emptyLabel) {{
   const target = document.getElementById(id);
@@ -320,7 +354,7 @@ function renderSummary(summary) {{
   setText("health-title", summary.healthy ? "Mission state verified" : "Mission state needs attention");
   setText("health-detail", `peer health: ${{summary.peer_health_status}} | last hash: ${{summary.last_hash || "--"}}`);
   const map = document.getElementById("map-link");
-  if (summary.map_href) {{
+  if (summary.map_href && !String(summary.map_href).trim().toLowerCase().startsWith("javascript:")) {{
     map.href = summary.map_href;
     map.hidden = false;
   }} else {{
@@ -435,6 +469,36 @@ if (refreshMs > 0) {{
 fn normalized_path(path: &str) -> &str {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
     path.split_once('#').map_or(path, |(path, _)| path)
+}
+
+fn query_token_matches(path: &str, expected_token: &str) -> bool {
+    query_value(path, "token")
+        .is_some_and(|actual_token| constant_time_eq(actual_token, expected_token))
+}
+
+fn query_value<'a>(path: &'a str, key: &str) -> Option<&'a str> {
+    let query = path.split_once('?')?.1;
+    let query = query.split_once('#').map_or(query, |(query, _)| query);
+    for pair in query.split('&') {
+        let (actual_key, actual_value) = pair.split_once('=').unwrap_or((pair, ""));
+        if actual_key == key {
+            return Some(actual_value);
+        }
+    }
+    None
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut diff = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+    for index in 0..max_len {
+        let left_byte = left.get(index).copied().unwrap_or(0);
+        let right_byte = right.get(index).copied().unwrap_or(0);
+        diff |= usize::from(left_byte ^ right_byte);
+    }
+    diff == 0
 }
 
 fn operator_summary(document: &DashboardDocument) -> OperatorConsoleSummary<'_> {
@@ -575,7 +639,8 @@ mod tests {
 
     #[test]
     fn summary_api_reports_verified_counts() {
-        let response = route_operator_console(&document("Ops"), "/api/summary?x=1", 0).unwrap();
+        let response =
+            route_operator_console(&document("Ops"), "/api/summary?x=1", 0, None).unwrap();
         assert_eq!(response.status, "200 OK");
         assert_eq!(response.content_type, "application/json; charset=utf-8");
         let value: Value = serde_json::from_slice(&response.body).unwrap();
@@ -588,9 +653,13 @@ mod tests {
 
     #[test]
     fn console_html_escapes_title_and_mounts_app() {
-        let response =
-            route_operator_console(&document("<script>alert(1)</script>"), "/console.html", 0)
-                .unwrap();
+        let response = route_operator_console(
+            &document("<script>alert(1)</script>"),
+            "/console.html",
+            0,
+            None,
+        )
+        .unwrap();
         let html = String::from_utf8(response.body).unwrap();
         assert!(html.contains("id=\"operator-console\""));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
@@ -600,7 +669,7 @@ mod tests {
 
     #[test]
     fn console_html_can_auto_refresh() {
-        let response = route_operator_console(&document("Ops"), "/", 7).unwrap();
+        let response = route_operator_console(&document("Ops"), "/", 7, None).unwrap();
         let html = String::from_utf8(response.body).unwrap();
         assert!(html.contains("http-equiv=\"refresh\" content=\"7\""));
         assert!(html.contains("data-refresh-ms=\"7000\""));
@@ -608,9 +677,37 @@ mod tests {
 
     #[test]
     fn unknown_route_returns_plain_404() {
-        let response = route_operator_console(&document("Ops"), "/missing", 0).unwrap();
+        let response = route_operator_console(&document("Ops"), "/missing", 0, None).unwrap();
         assert_eq!(response.status, "404 Not Found");
         assert_eq!(response.content_type, "text/plain; charset=utf-8");
         assert_eq!(response.body, b"not found\n");
+    }
+
+    #[test]
+    fn token_gate_rejects_missing_or_wrong_token() {
+        let document = document("Ops");
+        let missing = route_operator_console(&document, "/api/summary", 0, Some("secret")).unwrap();
+        assert_eq!(missing.status, "401 Unauthorized");
+
+        let wrong =
+            route_operator_console(&document, "/api/summary?token=wrong", 0, Some("secret"))
+                .unwrap();
+        assert_eq!(wrong.status, "401 Unauthorized");
+    }
+
+    #[test]
+    fn token_gate_allows_matching_token_and_embeds_it_for_api_calls() {
+        let document = document("Ops");
+        let summary =
+            route_operator_console(&document, "/api/summary?token=secret", 0, Some("secret"))
+                .unwrap();
+        assert_eq!(summary.status, "200 OK");
+
+        let console =
+            route_operator_console(&document, "/console.html?token=secret", 0, Some("secret"))
+                .unwrap();
+        let html = String::from_utf8(console.body).unwrap();
+        assert!(html.contains("data-api-token=\"secret\""));
+        assert!(html.contains("encodeURIComponent(apiToken)"));
     }
 }

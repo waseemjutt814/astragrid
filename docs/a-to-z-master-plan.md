@@ -59,8 +59,9 @@ gated until those inputs exist.
 - **Evidence-bound AI runner:** `astragrid-ai` runs a configured local executable without shell
   interpolation, feeds it mission/evidence JSON on stdin, enforces timeout/output caps, and accepts
   only structured recommendations that cite known evidence ids.
-- **API-backed operator console:** `astragrid-ui` and `ui serve` expose a loopback visual console
-  plus read-only JSON endpoints derived from the same verified dashboard document used by exports.
+- **API-backed operator console:** `astragrid-ui` and `ui serve` expose a token-gated loopback
+  visual console plus read-only JSON endpoints derived from the same verified dashboard document
+  used by exports.
 
 ## A-to-Z Delivery Gates
 
@@ -72,7 +73,7 @@ gated until those inputs exist.
 | D | Encrypted ledgers at rest | Complete for the vault runtime path: `vault init`, `vault append`, `vault verify`, and `vault tail` operate on a sealed ledger file as the primary at-rest artifact. Signed vault append remains a future hardening item. |
 | E | Automatic conflict merge for divergent ledgers | Complete for local files: `sync merge` preserves the common prefix, deterministically replays divergent branch suffixes into a new verified output ledger, refuses to overwrite outputs unless requested, and emits proof mapping source hashes to merged hashes. Multi-host conflict drills remain gated. |
 | F | Long-running secure network service | Complete for local authenticated snapshot serving: `net serve-daemon` verifies the ledger before bind, serves authenticated peers through the real protocol, can require active registry-enrolled signed peer identities, isolates failed peer requests, writes health/audit files, supports finite smoke runs, and has executable daemon tests. Systemd and Windows service kits now render real daemon install/uninstall artifacts. Multi-host deployment hardening remains future work. |
-| G | `astragrid-ui` operator console | Complete for local operation: `ui serve` rebuilds verified dashboard state per request, serves a visual console over loopback, and exposes read-only JSON endpoints for summary, events, approvals, audit timeline, peer health, full dashboard data, and health. |
+| G | `astragrid-ui` operator console | Complete for local operation: `ui serve` rebuilds verified dashboard state per request, serves a token-gated visual console over loopback, and exposes read-only JSON endpoints for summary, events, approvals, audit timeline, peer health, full dashboard data, and health. |
 | H | Hardware-backed keys | OS key sealing exists; TPM/YubiKey completion needs real hardware provider implementations and operator tests. |
 | I | Windows installer and package smoke | Current wave adds script installer, packaged installer, manifest, and smoke automation; MSI/winget/Scoop require release-channel decisions. |
 | J | Signed release notarization | Release custody signatures exist; notarization needs real code-signing/notary credentials. |
