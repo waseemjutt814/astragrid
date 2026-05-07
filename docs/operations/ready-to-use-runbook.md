@@ -103,6 +103,20 @@ passphrase file, approvals when present, peer queue when present, and reports.
 Restore validates each file hash and refuses to overwrite existing files unless `--overwrite` is
 supplied.
 
+## Divergent Ledger Merge
+
+When two local ledgers share a prefix but both sides appended different suffixes, create a new
+merged ledger and proof instead of overwriting either source:
+
+```powershell
+.\target\release\astragrid.exe sync merge --left ops\field\data\mission-left.agl --right ops\field\data\mission-right.agl --output ops\field\data\mission-merged.agl --proof ops\field\data\mission-merge-proof.json
+.\target\release\astragrid.exe verify --ledger ops\field\data\mission-merged.agl
+```
+
+The proof records the conflict, the deterministic replay policy, and the source-hash to
+merged-hash mapping. `sync merge` refuses to replace an existing non-empty output unless
+`--overwrite` is passed.
+
 ## Quorum Operator Enrollment
 
 Bootstrap at least two incident commanders before using quorum-governed registry changes. After
@@ -222,5 +236,7 @@ Delete only after reviewing the report:
 - Federation peer rejection: `net serve-daemon --peer-registry` closes the request before snapshot
   transfer when the client omits `--identity`, signs with an unenrolled key, or signs with a
   revoked registry identity.
+- Existing merge output: `sync merge` stops unless the output is empty or `--overwrite` is
+  supplied.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

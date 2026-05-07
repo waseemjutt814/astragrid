@@ -53,6 +53,9 @@ gated until those inputs exist.
 - **Replication worker hardening:** `peer-queue worker` can emit service health JSON and JSONL
   audit records for start, cycle, failure, and stopped states. Peer worker supervisor artifacts
   render those health/audit paths and stale retry thresholds into the real service command.
+- **Divergent ledger merge proof:** `sync merge` writes a separate verified output ledger,
+  preserves append-only histories without rehashing, replays divergent branch suffixes
+  deterministically, and emits source-to-merged hash proof.
 
 ## A-to-Z Delivery Gates
 
@@ -62,7 +65,7 @@ gated until those inputs exist.
 | B | Encrypted backups and restore | Complete for local workspaces: `ops backup` seals profile, ledger, store, registry, key/passphrase files, approvals when present, peer queue when present, and reports; `ops restore` validates hashes and refuses overwrite unless requested. |
 | C | Remote certificate authority | Not started until a real CA root, enrollment policy, and rotation procedure exist. |
 | D | Encrypted ledgers at rest | Complete for the vault runtime path: `vault init`, `vault append`, `vault verify`, and `vault tail` operate on a sealed ledger file as the primary at-rest artifact. Signed vault append remains a future hardening item. |
-| E | Automatic conflict merge for divergent ledgers | Divergence is detected; automatic merge needs deterministic conflict policy and replay proofs. |
+| E | Automatic conflict merge for divergent ledgers | Complete for local files: `sync merge` preserves the common prefix, deterministically replays divergent branch suffixes into a new verified output ledger, refuses to overwrite outputs unless requested, and emits proof mapping source hashes to merged hashes. Multi-host conflict drills remain gated. |
 | F | Long-running secure network service | Complete for local authenticated snapshot serving: `net serve-daemon` verifies the ledger before bind, serves authenticated peers through the real protocol, can require active registry-enrolled signed peer identities, isolates failed peer requests, writes health/audit files, supports finite smoke runs, and has executable daemon tests. Systemd and Windows service kits now render real daemon install/uninstall artifacts. Multi-host deployment hardening remains future work. |
 | G | `astragrid-ui` operator console | HTML exports and loopback serving exist; full app waits for a real UI runtime without heavy placeholder dependencies. |
 | H | Hardware-backed keys | OS key sealing exists; TPM/YubiKey completion needs real hardware provider implementations and operator tests. |

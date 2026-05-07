@@ -4,7 +4,8 @@ AstraGrid is an offline-first mission control kernel for evidence-led crisis ope
 
 The current foundation is executable: an append-only mission ledger, hash-chain verification,
 encrypted local signing identities, trusted operator registry, SQLite indexing, GeoJSON feature
-ingestion, evidence bundles, authenticated peer snapshots, offline sync planning, encrypted
+ingestion, evidence bundles, authenticated peer snapshots, offline sync planning and deterministic
+divergent-ledger merge proofing, encrypted
 artifact sealing, materialized mission state, report export, packaging scripts, approval-gated
 workflow execution, executable acceptance scenarios, operator dashboard export, workspace doctor,
 admission policy checks, signed local team sessions, secure device pairing grants,
@@ -46,7 +47,7 @@ and a CLI.
 - Multi-peer sync planning from a peer manifest.
 - Durable SQLite peer sync queue with retries and append-only apply.
 - Finite-cycle or daemon-mode peer queue worker with optional health JSON and JSONL audit output.
-- Offline ledger comparison, append-only delta apply, and divergence detection.
+- Offline ledger comparison, append-only delta apply, and divergent-ledger merge into a new verified ledger with replay proof.
 - Encrypted artifact sealing for ledgers, exports, and reports.
 - Sealed workspace backup and restore with per-file SHA-256 validation.
 - Encrypted-at-rest ledger vault commands for init, append, verify, and tail.
@@ -138,7 +139,7 @@ AstraGrid is built around four non-negotiables:
 - `crates/astragrid-state`: current mission state projection from ledger events.
 - `crates/astragrid-store`: SQLite mission index for verified ledgers.
 - `crates/astragrid-supervisor`: service manager artifacts for peer workers and federation daemons.
-- `crates/astragrid-sync`: offline ledger comparison and conflict detection.
+- `crates/astragrid-sync`: offline ledger comparison, append-only apply, and divergent-ledger merge proofing.
 - `crates/astragrid-sync-queue`: durable peer sync queue and retry worker.
 - `crates/astragrid-workflow`: evidence-to-command workflow drafting.
 - `docs/`: architecture, operations, security, and ADRs.

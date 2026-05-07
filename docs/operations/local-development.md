@@ -100,6 +100,10 @@ $evidence = ".cache\evidence-$id.json"
 $bundle = ".cache\bundle-$id.json"
 $workflowBundle = ".cache\workflow-bundle-$id.json"
 $peerLedger = ".cache\peer-$id.agl"
+$mergeLeft = ".cache\merge-left-$id.agl"
+$mergeRight = ".cache\merge-right-$id.agl"
+$mergeOutput = ".cache\merge-output-$id.agl"
+$mergeProof = ".cache\merge-proof-$id.json"
 '[{"id":"sensor-1","source":"river-gauge","kind":"sensor","confidence":0.92,"digest":"abc123","excerpt":"water=5.2"}]' | Set-Content -Encoding UTF8 $evidence
 cargo run -q -p astragrid -- evidence build --mission flood-watch --evidence $evidence --action declare_incident --subject river-east --rationale "Gauge exceeded threshold." --confidence 0.88 --evidence-id sensor-1 --output $bundle
 cargo run -q -p astragrid -- evidence build --mission flood-watch --evidence $evidence --action declare_incident --subject river-west --rationale "Second gauge exceeded threshold." --confidence 0.91 --evidence-id sensor-1 --output $workflowBundle
@@ -108,6 +112,12 @@ cargo run -q -p astragrid -- sync compare --left $ledger --right $ledger
 Copy-Item $ledger $peerLedger
 cargo run -q -p astragrid -- append --ledger $peerLedger --actor operator --role operator --action annotate_situation --subject sector-7 --priority elevated --payload '{ "note": "peer field check" }'
 cargo run -q -p astragrid -- sync apply --target $ledger --source $peerLedger
+cargo run -q -p astragrid -- init --mission merge-watch --ledger $mergeLeft
+Copy-Item $mergeLeft $mergeRight
+cargo run -q -p astragrid -- append --ledger $mergeLeft --actor left-operator --role operator --action annotate_situation --subject sector-left --priority elevated --payload '{ "note": "left branch" }'
+cargo run -q -p astragrid -- append --ledger $mergeRight --actor right-observer --role observer --action record_observation --subject sector-right --payload '{ "note": "right branch" }'
+cargo run -q -p astragrid -- sync merge --left $mergeLeft --right $mergeRight --output $mergeOutput --proof $mergeProof
+cargo run -q -p astragrid -- verify --ledger $mergeOutput
 ```
 
 ## Recommendation Rule Smoke Test

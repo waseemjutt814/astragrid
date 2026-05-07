@@ -211,7 +211,13 @@ rejected before an `EvidenceBundle` is written.
 `astragrid-sync` compares two verified ledgers. It reports whether ledgers are identical,
 append-only ahead on either side, or diverged at the first conflicting sequence. `sync apply`
 imports only the missing suffix when the source ledger is an append-only extension of the target.
-Diverged ledgers fail closed and require operator resolution.
+`sync merge` handles divergent histories by writing a new output ledger instead of mutating either
+input. The merge preserves the common prefix, then replays branch suffixes through a deterministic
+branch-head policy that keeps each branch in ledger order and chooses between branch heads by event
+time, sequence, hash, and side. The proof JSON maps each original source hash to the merged hash,
+marks preserved versus replayed events, includes the original conflict, and verifies the output
+ledger before reporting success. This avoids pretending that two conflicting chains can be silently
+spliced without rehashing.
 
 ## Peer Transport
 

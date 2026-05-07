@@ -47,7 +47,7 @@ use astragrid_supervisor::{
     FederationDaemonSupervisorSpec, PeerWorkerSupervisorSpec, SystemdFederationDaemonUnit,
     SystemdPeerWorkerUnit, WindowsFederationDaemonTask, WindowsPeerWorkerTask,
 };
-use astragrid_sync::{SyncPlan, apply_append_only};
+use astragrid_sync::{LedgerMergeOptions, SyncPlan, apply_append_only, merge_ledgers_to_output};
 use astragrid_sync_queue::{
     PeerSyncQueue, ProcessOutcome, QueueHealthSnapshot, QueueHealthStatus, QueueProcessOptions,
     QueueProcessResult, QueueStatus,
@@ -824,6 +824,19 @@ enum SyncCommands {
         target: PathBuf,
         #[arg(long)]
         source: PathBuf,
+    },
+    /// Merge identical, append-only, or divergent ledgers into a new verified ledger with proof.
+    Merge {
+        #[arg(long)]
+        left: PathBuf,
+        #[arg(long)]
+        right: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        proof: Option<PathBuf>,
+        #[arg(long)]
+        overwrite: bool,
     },
 }
 
@@ -2455,6 +2468,27 @@ fn main() -> Result<()> {
                 let target = MissionLedger::open(target);
                 let source = MissionLedger::open(source);
                 print_json(&apply_append_only(&target, &source)?)
+            }
+            SyncCommands::Merge {
+                left,
+                right,
+                output,
+                proof,
+                overwrite,
+            } => {
+                let left = MissionLedger::open(left);
+                let right = MissionLedger::open(right);
+                let output = MissionLedger::open(output);
+                let report = merge_ledgers_to_output(
+                    &left,
+                    &right,
+                    &output,
+                    LedgerMergeOptions { overwrite },
+                )?;
+                if let Some(proof) = proof {
+                    write_json_file(&proof, &report)?;
+                }
+                print_json(&report)
             }
         },
         Commands::Seal { command } => match command {
@@ -5692,6 +5726,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "hardened federation daemon",
             "signed peer registry authorization",
             "federation daemon supervisor artifacts",
+            "divergent ledger merge proof",
             "package provenance"
         ]
     });
@@ -5820,6 +5855,12 @@ try {{
     $federationWindowsKit = Join-Path $Run 'federation-windows-kit'
     $federationPort = Get-Random -Minimum 20000 -Maximum 30000
     $federationBind = "127.0.0.1:$federationPort"
+    $mergeLeft = Join-Path $Run 'merge-left.agl'
+    $mergeRight = Join-Path $Run 'merge-right.agl'
+    $mergeOutput = Join-Path $Run 'merge-output.agl'
+    $mergeProof = Join-Path $Run 'merge-proof.json'
+    $mergeLeftPayload = Join-Path $Run 'merge-left-payload.json'
+    $mergeRightPayload = Join-Path $Run 'merge-right-payload.json'
 
     'acceptance local passphrase' | Set-Content -Encoding UTF8 $passphrase
     'acceptance deputy passphrase' | Set-Content -Encoding UTF8 $deputyPassphrase
@@ -5827,6 +5868,8 @@ try {{
     '{{"water_level_m":5.2}}' | Set-Content -Encoding UTF8 $payload
     '{{"team_id":"alpha"}}' | Set-Content -Encoding UTF8 $dispatchPayload
     '{{"note":"vault runtime append"}}' | Set-Content -Encoding UTF8 $vaultPayload
+    '{{"note":"left branch field note"}}' | Set-Content -Encoding UTF8 $mergeLeftPayload
+    '{{"note":"right branch field note"}}' | Set-Content -Encoding UTF8 $mergeRightPayload
     'acceptance federation shared key' | Set-Content -Encoding UTF8 $federationKey
     'acceptance federation peer passphrase' | Set-Content -Encoding UTF8 $federationPassphrase
 @'
@@ -5913,6 +5956,17 @@ exit 0
     Invoke-AstraGrid team append --ledger $ledger --identity $identity --passphrase-file $passphrase --registry $registry --session $session --policy-pack $policyPack --policy-signature $policySignature --action dispatch_team --subject river-east --priority elevated --payload "@$dispatchPayload"
     Invoke-AstraGrid verify --ledger $ledger
     Invoke-AstraGrid store ingest --ledger $ledger --db $db
+    Invoke-AstraGrid init --mission divergent-watch --ledger $mergeLeft
+    Copy-Item $mergeLeft $mergeRight
+    Invoke-AstraGrid append --ledger $mergeLeft --actor left-operator --role operator --action annotate_situation --subject sector-left --priority elevated --payload "@$mergeLeftPayload"
+    Invoke-AstraGrid append --ledger $mergeRight --actor right-observer --role observer --action record_observation --subject sector-right --priority routine --payload "@$mergeRightPayload"
+    Invoke-AstraGrid sync merge --left $mergeLeft --right $mergeRight --output $mergeOutput --proof $mergeProof
+    Invoke-AstraGrid verify --ledger $mergeOutput
+    $mergeProofJson = Get-Content -Raw $mergeProof | ConvertFrom-Json
+    if ($mergeProofJson.status -ne 'diverged') {{ throw "unexpected merge status: $($mergeProofJson.status)" }}
+    if ($mergeProofJson.output_valid -ne $true) {{ throw 'merge proof did not mark output valid' }}
+    if ($mergeProofJson.replayed_events -ne 2) {{ throw "unexpected replayed events: $($mergeProofJson.replayed_events)" }}
+    if ($mergeProofJson.merged_events -ne 3) {{ throw "unexpected merged events: $($mergeProofJson.merged_events)" }}
     Invoke-AstraGrid evidence build --mission flood-watch --evidence $evidence --action close_incident --subject river-east --rationale 'Water receded below incident threshold.' --confidence 0.91 --evidence-id sensor-1 --output $bundle
     Invoke-AstraGrid workflow draft --ledger $ledger --bundle $bundle --actor lead --role incident_commander --min-confidence 0.75 --output $draft
     $approval = Invoke-AstraGridJson approval submit --queue $approvals --draft $draft --requested-by acceptance
@@ -7697,7 +7751,7 @@ mod tests {
         PeerQueueCommands, PeerQueueWorkerRequest, PolicyPackCommands, ProvenanceCommands,
         ReadinessGateRequest, RecommendCommands, RegistryQuorumChangeKind,
         RegistryQuorumProposalRequest, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
-        RestoreRequest, RotateOperatorRequest, SetupCommands, TeamAppendRequest,
+        RestoreRequest, RotateOperatorRequest, SetupCommands, SyncCommands, TeamAppendRequest,
         TeamSessionIssueRequest, VaultAppendRequest, VaultCommands, WorkerWatchdogRequest,
         WorkspaceProfile, acceptance_scenario, apply_registry_quorum_proposal,
         authorize_team_action, build_registry_trust_bundle, create_device_pairing,
@@ -8121,6 +8175,45 @@ mod tests {
                     proof_output,
                     PathBuf::from("data/operators/rotation-proof.json")
                 );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_sync_merge_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "sync",
+            "merge",
+            "--left",
+            "data/left.agl",
+            "--right",
+            "data/right.agl",
+            "--output",
+            "data/merged.agl",
+            "--proof",
+            "data/merge-proof.json",
+            "--overwrite",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Sync {
+                command:
+                    SyncCommands::Merge {
+                        left,
+                        right,
+                        output,
+                        proof,
+                        overwrite,
+                    },
+            } => {
+                assert_eq!(left, PathBuf::from("data/left.agl"));
+                assert_eq!(right, PathBuf::from("data/right.agl"));
+                assert_eq!(output, PathBuf::from("data/merged.agl"));
+                assert_eq!(proof, Some(PathBuf::from("data/merge-proof.json")));
+                assert!(overwrite);
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }

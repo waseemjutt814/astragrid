@@ -161,3 +161,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Render timeline severity, source, actor, subject, detail, and references in exported/served dashboard HTML.
 - [x] Include timeline counts in dashboard export JSON output.
 - [x] Add focused dashboard coverage for ordering, severity, and HTML escaping.
+
+## Next Wave: Divergent Ledger Merge Proof
+
+- [x] Add `sync merge` for verified output ledgers built from two local input ledgers.
+- [x] Preserve identical and append-only events without rehashing.
+- [x] Deterministically replay divergent branch suffixes into a new hash chain.
+- [x] Emit merge proof mapping source hashes to merged hashes with preserved/replayed markers.
+- [x] Add sync library, CLI parser, acceptance, and docs coverage.
