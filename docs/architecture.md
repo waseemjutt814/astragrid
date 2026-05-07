@@ -29,6 +29,7 @@ operator pack -> executable acceptance workflow
 release provenance -> custody pack -> healthy release doctor gate
 signed custody artifacts -> release evidence pack -> checksum manifest
 workspace/release doctors -> finite readiness gate
+Windows package -> launcher/smoke helper -> executable startup verification
 ```
 
 ## Mission Ledger
@@ -240,6 +241,10 @@ records package metadata plus checked file digests in `release-evidence-manifest
 `ops readiness-gate` runs finite workspace doctor cycles and, when release inputs are supplied,
 release doctor cycles. It can fail on warnings for handoff gates or tolerate warnings for field
 observation runs while still reporting the exact warning and failure totals.
+
+The Windows package includes `START-ASTRAGRID.cmd` and `VERIFY-ASTRAGRID.ps1`. The executable also
+prints startup guidance when launched without a subcommand, so double-click launches and first-run
+PowerShell checks do not look like a broken binary.
 
 ## Worker Service Kits
 

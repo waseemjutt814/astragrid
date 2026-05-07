@@ -50,7 +50,16 @@ try {
         Remove-Item -LiteralPath $artifact -Force
     }
 
-    Compress-Archive -Path $binary, "README.md", "SECURITY.md", "LICENSE" -DestinationPath $artifact
+    $packageLauncher = Join-Path $ProjectRoot "tools\package\START-ASTRAGRID.cmd"
+    $packageVerifier = Join-Path $ProjectRoot "tools\package\VERIFY-ASTRAGRID.ps1"
+    $packageReadme = Join-Path $ProjectRoot "tools\package\WINDOWS-README.txt"
+    foreach ($packageFile in @($packageLauncher, $packageVerifier, $packageReadme)) {
+        if (-not (Test-Path -LiteralPath $packageFile)) {
+            throw "package helper not found: $packageFile"
+        }
+    }
+
+    Compress-Archive -Path $binary, "README.md", "SECURITY.md", "LICENSE", $packageLauncher, $packageVerifier, $packageReadme -DestinationPath $artifact
 
     $provenancePath = Join-Path $dist "astragrid-windows-x64-$version.provenance.json"
     if (Test-Path -LiteralPath $provenancePath) {
@@ -92,7 +101,15 @@ try {
             path = "..\target\$Configuration\astragrid.exe"
             sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary).Hash.ToLowerInvariant()
         }
-        included_files = @("target\$Configuration\astragrid.exe", "README.md", "SECURITY.md", "LICENSE")
+        included_files = @(
+            "target\$Configuration\astragrid.exe",
+            "README.md",
+            "SECURITY.md",
+            "LICENSE",
+            "tools\package\START-ASTRAGRID.cmd",
+            "tools\package\VERIFY-ASTRAGRID.ps1",
+            "tools\package\WINDOWS-README.txt"
+        )
         toolchain = [ordered]@{
             cargo = (cargo --version)
             rustc = (rustc --version)

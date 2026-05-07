@@ -62,3 +62,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add a release evidence pack that writes checksums, doctor output, and a handoff manifest from signed custody artifacts.
 - [x] Add a finite readiness gate for repeated workspace and release doctor cycles.
 - [x] Add parser and executable tests for registry import, release evidence packs, and readiness gates.
+
+## Next Wave: Windows Distribution Runtime
+
+- [x] Make `astragrid.exe` useful when launched without arguments instead of exiting as a failed command.
+- [x] Add a double-click friendly `START-ASTRAGRID.cmd` launcher to the Windows package.
+- [x] Add a packaged `VERIFY-ASTRAGRID.ps1` executable smoke helper.
+- [x] Include launcher and smoke helper files in package provenance metadata.
+- [x] Add parser/runtime tests for no-argument launcher behavior.

@@ -322,11 +322,15 @@ powershell -ExecutionPolicy Bypass -File "$acceptance\run-acceptance.ps1" -Proje
 The package script writes both `dist\astragrid-windows-x64-<version>.zip` and
 `dist\astragrid-windows-x64-<version>.provenance.json`.
 
+The zip includes `START-ASTRAGRID.cmd` for double-click launches and
+`VERIFY-ASTRAGRID.ps1` for a local executable smoke test after extraction.
+
 Verify the generated checksums before sharing the package:
 
 ```powershell
 cargo run -q -p astragrid -- provenance verify --input dist\astragrid-windows-x64-0.1.0.provenance.json
 cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-x64-0.1.0.provenance.json
+tar -tf dist\astragrid-windows-x64-0.1.0.zip
 ```
 
 To sign release custody with a real local operator key, pass the identity to the package script.

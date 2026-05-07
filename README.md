@@ -51,6 +51,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Operator handoff bundle export with dashboard, state, doctor reports, optional map console, and manifest.
 - Release evidence pack export with checksums, healthy doctor output, and handoff manifest.
 - Finite readiness gate for repeated workspace and release doctor cycles.
+- Double-click friendly Windows launcher guidance and packaged executable smoke helper.
 - Payload size limit and deterministic payload hashing.
 - Release provenance verification with fail-closed SHA-256 checks for packaged artifacts.
 - Optional operator-signed provenance envelopes for release custody.
@@ -62,7 +63,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Peer queue health telemetry snapshots.
 - `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
 - GitHub Actions CI for formatting, linting, tests, build, and docs.
-- Release packaging emits SHA-256 provenance JSON.
+- Release packaging emits SHA-256 provenance JSON and includes Windows launch/smoke helpers.
 
 ## Quick Start
 

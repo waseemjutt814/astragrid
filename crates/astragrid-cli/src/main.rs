@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
-    io::{Read, Write},
+    io::{self, IsTerminal, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     time::Duration as StdDuration,
@@ -56,7 +56,7 @@ const DEFAULT_OS_PASSPHRASE_PURPOSE: &str = "astragrid-operator-key-passphrase-v
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1154,8 +1154,11 @@ impl From<PeerWorkerSupervisorArgs> for PeerWorkerSupervisorSpec {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let Some(command) = cli.command else {
+        return run_default_launcher();
+    };
 
-    match cli.command {
+    match command {
         Commands::Init {
             ledger,
             mission,
@@ -3333,6 +3336,30 @@ fn write_release_evidence_pack(request: ReleaseEvidencePackRequest) -> Result<Va
     }))
 }
 
+fn run_default_launcher() -> Result<()> {
+    let exe_name = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "astragrid.exe".to_owned());
+    println!("{}", render_default_launcher(&exe_name));
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        print!("Press Enter to close...");
+        io::stdout().flush()?;
+        let mut line = String::new();
+        let _ = io::stdin().read_line(&mut line);
+    }
+    Ok(())
+}
+
+fn render_default_launcher(exe_name: &str) -> String {
+    format!(
+        "AstraGrid is installed and ready.\n\nThis is a command-line mission-control kernel. Run it from PowerShell or use START-ASTRAGRID.cmd from the release zip.\n\nQuick checks:\n  .\\{exe_name} --version\n  .\\{exe_name} --help\n  .\\{exe_name} doctor workspace --ledger data\\mission.agl\n\nCreate a first local ledger:\n  .\\{exe_name} init --mission flood-watch --ledger data\\mission.agl\n"
+    )
+}
+
 fn run_readiness_gate(request: ReadinessGateRequest) -> Result<Value> {
     if request.cycles == 0 {
         bail!("--cycles must be at least 1");
@@ -3678,10 +3705,21 @@ mod tests {
         RecommendCommands, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
         acceptance_scenario, build_registry_trust_bundle, default_signature_output_path,
         export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
-        inject_meta_refresh, read_payload, render_acceptance_script, run_readiness_gate,
-        sha256_file_hex, verify_registry_trust_bundle, write_acceptance_pack,
+        inject_meta_refresh, read_payload, render_acceptance_script, render_default_launcher,
+        run_readiness_gate, sha256_file_hex, verify_registry_trust_bundle, write_acceptance_pack,
         write_release_custody_pack, write_release_evidence_pack,
     };
+
+    #[test]
+    fn parses_no_arg_default_launcher() {
+        let cli = Cli::try_parse_from(["astragrid"]).unwrap();
+
+        assert!(cli.command.is_none());
+        let screen = render_default_launcher("astragrid.exe");
+        assert!(screen.contains("AstraGrid is installed and ready."));
+        assert!(screen.contains(".\\astragrid.exe --help"));
+        assert!(screen.contains("START-ASTRAGRID.cmd"));
+    }
 
     #[test]
     fn reads_inline_json_payload() {
@@ -3712,7 +3750,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Provenance {
                 command: ProvenanceCommands::Verify { input },
             } => assert_eq!(input, PathBuf::from("dist/package.provenance.json")),
@@ -3733,7 +3771,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Identity {
                 command: IdentityCommands::OsSealPassphrase { input, output, .. },
             } => {
@@ -3756,7 +3794,7 @@ mod tests {
             "ops/trust-bundle.json",
         ])
         .unwrap();
-        match bundle.command {
+        match bundle.command.expect("command") {
             Commands::Identity {
                 command: IdentityCommands::RegistryBundle { registry, output },
             } => {
@@ -3776,7 +3814,7 @@ mod tests {
             "data/operators.agregistry",
         ])
         .unwrap();
-        match verify.command {
+        match verify.command.expect("command") {
             Commands::Identity {
                 command: IdentityCommands::RegistryVerifyBundle { input, registry },
             } => {
@@ -3800,7 +3838,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::PeerQueue {
                 command:
                     PeerQueueCommands::Health {
@@ -3832,7 +3870,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Recommend {
                 command:
                     RecommendCommands::ModelOutput {
@@ -3868,7 +3906,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Geo {
                 command:
                     GeoCommands::Console {
@@ -3906,7 +3944,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Geo {
                 command:
                     GeoCommands::Serve {
@@ -3995,7 +4033,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Dashboard {
                 command:
                     DashboardCommands::Export {
@@ -4030,7 +4068,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Dashboard {
                 command:
                     DashboardCommands::Serve {
@@ -4082,7 +4120,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Ops {
                 command:
                     OpsCommands::Bundle {
@@ -4118,7 +4156,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Ops {
                 command: OpsCommands::AcceptancePack { output_dir, title },
             } => {
@@ -4148,7 +4186,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Ops {
                 command:
                     OpsCommands::ReleaseEvidencePack {
@@ -4189,7 +4227,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Ops {
                 command:
                     OpsCommands::ReadinessGate {
@@ -4298,7 +4336,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Doctor {
                 command:
                     DoctorCommands::Release {
@@ -4347,7 +4385,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Provenance {
                 command:
                     ProvenanceCommands::PolicyTemplate {
@@ -4391,7 +4429,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Provenance {
                 command:
                     ProvenanceCommands::PolicyVerify {
@@ -4428,7 +4466,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Provenance {
                 command:
                     ProvenanceCommands::CustodyPack {
@@ -4648,7 +4686,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Provenance {
                 command: ProvenanceCommands::QuorumVerify { input },
             } => assert_eq!(input, PathBuf::from("dist/package.quorum.json")),
@@ -4677,7 +4715,7 @@ mod tests {
         ])
         .unwrap();
 
-        match cli.command {
+        match cli.command.expect("command") {
             Commands::Supervisor {
                 command: super::SupervisorCommands::SystemdPeerWorker { output, spec, .. },
             } => {
@@ -4700,7 +4738,7 @@ mod tests {
             "secrets/peer.key",
         ])
         .unwrap();
-        match systemd.command {
+        match systemd.command.expect("command") {
             Commands::Supervisor {
                 command:
                     super::SupervisorCommands::SystemdPeerWorkerKit {
@@ -4723,7 +4761,7 @@ mod tests {
             "secrets/peer.key",
         ])
         .unwrap();
-        match windows.command {
+        match windows.command.expect("command") {
             Commands::Supervisor {
                 command:
                     super::SupervisorCommands::WindowsPeerWorkerKit {
