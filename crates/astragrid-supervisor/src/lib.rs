@@ -116,6 +116,40 @@ impl SystemdPeerWorkerUnit {
         ]);
         Ok(lines.join("\n"))
     }
+
+    pub fn render_install_script(&self) -> Result<String, SupervisorError> {
+        validate_name("unit_name", &self.unit_name)?;
+        self.spec.validate()?;
+        Ok(format!(
+            concat!(
+                "#!/usr/bin/env bash\n",
+                "set -euo pipefail\n",
+                "SCRIPT_DIR=\"$(cd \"$(dirname \"${{BASH_SOURCE[0]}}\")\" && pwd)\"\n",
+                "UNIT_NAME={unit_name}\n",
+                "install -m 0644 \"$SCRIPT_DIR/$UNIT_NAME\" \"/etc/systemd/system/$UNIT_NAME\"\n",
+                "systemctl daemon-reload\n",
+                "systemctl enable --now \"$UNIT_NAME\"\n",
+                "systemctl status --no-pager \"$UNIT_NAME\"\n"
+            ),
+            unit_name = shell_quote(&self.unit_name),
+        ))
+    }
+
+    pub fn render_uninstall_script(&self) -> Result<String, SupervisorError> {
+        validate_name("unit_name", &self.unit_name)?;
+        Ok(format!(
+            concat!(
+                "#!/usr/bin/env bash\n",
+                "set -euo pipefail\n",
+                "UNIT_NAME={unit_name}\n",
+                "systemctl disable --now \"$UNIT_NAME\" || true\n",
+                "rm -f \"/etc/systemd/system/$UNIT_NAME\"\n",
+                "systemctl daemon-reload\n",
+                "systemctl reset-failed \"$UNIT_NAME\" || true\n"
+            ),
+            unit_name = shell_quote(&self.unit_name),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +178,20 @@ impl WindowsPeerWorkerTask {
             binary = powershell_quote(&self.spec.binary.to_string_lossy()),
             argument = powershell_quote(&argument),
             working_directory = powershell_quote(&self.spec.working_directory.to_string_lossy()),
+            task_name = powershell_quote(&self.task_name),
+        ))
+    }
+
+    pub fn render_uninstall_script(&self) -> Result<String, SupervisorError> {
+        validate_name("task_name", &self.task_name)?;
+        Ok(format!(
+            concat!(
+                "$ErrorActionPreference = 'Stop'\n",
+                "$taskName = {task_name}\n",
+                "if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {{\n",
+                "    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false\n",
+                "}}\n"
+            ),
             task_name = powershell_quote(&self.task_name),
         ))
     }
@@ -198,6 +246,11 @@ fn windows_arg_quote(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+fn shell_quote(value: &str) -> String {
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +301,37 @@ mod tests {
         assert!(rendered.contains("New-ScheduledTaskAction"));
         assert!(rendered.contains("'D:\\astragrid\\target\\release\\astragrid.exe'"));
         assert!(rendered.contains("Register-ScheduledTask"));
+    }
+
+    #[test]
+    fn renders_systemd_install_uninstall_scripts() {
+        let unit = SystemdPeerWorkerUnit {
+            unit_name: "astragrid-peer-worker.service".to_owned(),
+            description: "AstraGrid peer sync worker".to_owned(),
+            user: Some("astragrid".to_owned()),
+            restart_seconds: 5,
+            spec: spec(),
+        };
+
+        let install = unit.render_install_script().unwrap();
+        let uninstall = unit.render_uninstall_script().unwrap();
+
+        assert!(install.contains("systemctl enable --now"));
+        assert!(install.contains("/etc/systemd/system/$UNIT_NAME"));
+        assert!(uninstall.contains("systemctl disable --now"));
+    }
+
+    #[test]
+    fn renders_windows_uninstall_script() {
+        let task = WindowsPeerWorkerTask {
+            task_name: "AstraGrid Peer Worker".to_owned(),
+            spec: spec(),
+        };
+
+        let rendered = task.render_uninstall_script().unwrap();
+
+        assert!(rendered.contains("Unregister-ScheduledTask"));
+        assert!(rendered.contains("$taskName"));
     }
 
     #[test]

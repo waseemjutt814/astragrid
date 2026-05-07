@@ -181,6 +181,8 @@ Generate service manager artifacts for a long-running worker:
 ```powershell
 cargo run -q -p astragrid -- supervisor windows-peer-worker --output .cache\astragrid-peer-worker.ps1 --binary target\release\astragrid.exe --working-directory . --ledger $ledger --queue $peerQueue --shared-key-file $sharedKey
 cargo run -q -p astragrid -- supervisor systemd-peer-worker --output .cache\astragrid-peer-worker.service --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --user astragrid
+cargo run -q -p astragrid -- supervisor windows-peer-worker-kit --output-dir .cache\worker-kit-windows --binary target\release\astragrid.exe --working-directory . --ledger $ledger --queue $peerQueue --shared-key-file $sharedKey
+cargo run -q -p astragrid -- supervisor systemd-peer-worker-kit --output-dir .cache\worker-kit-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --user astragrid
 ```
 
 ## Source Profile Smoke Test
@@ -280,6 +282,10 @@ cargo run -q -p astragrid -- scenario run --input $scenario --workdir $scenarioW
 ```powershell
 $dashboard = ".cache\dashboard-$id.html"
 cargo run -q -p astragrid -- dashboard export --ledger $ledger --db $db --output $dashboard --title "Flood Watch"
+$server = Start-Job -ScriptBlock { param($ledger, $db) cargo run -q -p astragrid -- dashboard serve --ledger $ledger --db $db --bind 127.0.0.1:17880 --max-requests 1 } -ArgumentList $ledger, $db
+Start-Sleep -Seconds 2
+Invoke-WebRequest http://127.0.0.1:17880/dashboard.html | Select-Object -ExpandProperty StatusCode
+Receive-Job $server -Wait
 cargo run -q -p astragrid -- doctor workspace --ledger $ledger --db $db --identity $key --approvals $approvals --peer-queue $peerQueue
 ```
 
@@ -289,6 +295,14 @@ cargo run -q -p astragrid -- doctor workspace --ledger $ledger --db $db --identi
 $opsBundle = ".cache\ops-bundle-$id"
 cargo run -q -p astragrid -- ops bundle --ledger $ledger --db $db --approvals $approvals --identity $key --peer-queue $peerQueue --features $geoOut --output-dir $opsBundle --title "Flood Watch Handoff"
 Get-ChildItem $opsBundle
+```
+
+## Acceptance Pack Smoke Test
+
+```powershell
+$acceptance = ".cache\acceptance-pack-$id"
+cargo run -q -p astragrid -- ops acceptance-pack --output-dir $acceptance --title "Flood Watch Acceptance"
+powershell -ExecutionPolicy Bypass -File "$acceptance\run-acceptance.ps1" -ProjectRoot (Get-Location).Path -SkipPackage
 ```
 
 ## Package Smoke Test

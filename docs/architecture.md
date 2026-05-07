@@ -19,8 +19,10 @@ state + evidence bundle -> workflow command draft
 workflow command draft -> approval log -> signed ledger append
 scenario file -> ledger/state/store assertions
 mission artifacts -> dashboard export
+mission artifacts -> loopback dashboard server
 workspace artifacts -> doctor report
 verified artifacts -> ops handoff bundle
+operator pack -> executable acceptance workflow
 ```
 
 ## Mission Ledger
@@ -203,7 +205,9 @@ checks, not for replacing unit tests.
 `astragrid-dashboard` renders a self-contained HTML mission dashboard from verified local
 artifacts. The CLI assembles ledger state, recent events, optional store summary, approvals, peer
 queue state, peer health telemetry, evidence bundles, and a map link. The renderer escapes text,
-surfaces queue health as a status banner, and does not require a web server.
+surfaces queue health as a status banner, and does not require a web server. `dashboard serve`
+binds to a requested address, defaults to loopback, regenerates the same verified dashboard for
+each request, and injects browser refresh metadata without changing offline export behavior.
 
 ## Operator Handoff Bundle
 
@@ -211,6 +215,17 @@ surfaces queue health as a status banner, and does not require a web server.
 state summary, workspace doctor report, manifest, and optional map console or release doctor
 report. The manifest records only generated bundle-relative files so it can be copied to another
 operator without embedding local workstation paths.
+
+`ops acceptance-pack` writes a runnable PowerShell acceptance pack. The pack exercises identity
+creation, registry enrollment, signed append, evidence build, workflow draft, approval append,
+store ingest, dashboard export, ops bundle, scenario run, doctor, and optional package provenance
+verification through the same CLI used by operators.
+
+## Worker Service Kits
+
+Supervisor commands can emit standalone peer worker artifacts or full kits. The kit variants write
+the generated unit or scheduled-task registration plus install and uninstall wrappers. The wrappers
+are generated only; operators still decide when to execute them on the target host.
 
 ## Workspace Doctor
 

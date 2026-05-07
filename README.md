@@ -41,6 +41,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Approved draft execution through signed, registry-checked ledger append.
 - JSON scenario runner for mission acceptance tests with ledger, state, and store assertions.
 - Self-contained operator dashboard export with peer health status, recent errors, and map links.
+- Loopback dashboard serving that regenerates verified dashboard HTML for each request.
 - Workspace doctor for ledger, state, store, key, approval, and peer queue checks.
 - Release doctor for package provenance, detached signature, and quorum readiness checks.
 - Release custody policy verification for required signer ids, allowed signer sets, clean Git state, and promotion thresholds.
@@ -50,6 +51,8 @@ evidence-to-command workflow drafting, and a CLI.
 - Optional operator-signed provenance envelopes for release custody.
 - Multi-signature provenance quorum verification with distinct signer thresholds.
 - Deterministic supervisor artifact generation for peer queue workers.
+- Peer worker service kits with generated install and uninstall wrappers.
+- Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.
 - `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
 - GitHub Actions CI for formatting, linting, tests, build, and docs.
@@ -110,4 +113,4 @@ AstraGrid is built around four non-negotiables:
 ## Roadmap
 
 See `docs/roadmap.md` for the active phase checklist. The next deepening passes are hardware-backed
-keys, live map refresh, release quorum policy files, and peer health dashboard integration.
+keys, multi-host operator trust, live map refresh, and field deployment hardening.

@@ -1,6 +1,9 @@
 use std::{
     fs,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
+    time::Duration as StdDuration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -687,9 +690,34 @@ enum DashboardCommands {
         #[arg(long)]
         map_href: Option<String>,
     },
+    /// Serve the dashboard over loopback and regenerate it for each request.
+    Serve {
+        #[arg(long, default_value = "data/mission.agl")]
+        ledger: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:17880")]
+        bind: String,
+        #[arg(long, default_value = "AstraGrid Mission Dashboard")]
+        title: String,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        approvals: Option<PathBuf>,
+        #[arg(long)]
+        peer_queue: Option<PathBuf>,
+        #[arg(long)]
+        evidence_bundle: Vec<PathBuf>,
+        #[arg(long)]
+        map_href: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        refresh_seconds: u64,
+        /// Optional finite request count for smoke tests and supervised runs.
+        #[arg(long)]
+        max_requests: Option<u32>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum OpsCommands {
     /// Export a handoff folder with dashboard, state, doctor reports, and manifest.
     Bundle {
@@ -719,6 +747,13 @@ enum OpsCommands {
         quorum: Option<PathBuf>,
         #[arg(long)]
         release_policy: Option<PathBuf>,
+    },
+    /// Generate a runnable local mission acceptance pack.
+    AcceptancePack {
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "Flood Watch Acceptance")]
+        title: String,
     },
 }
 
@@ -949,6 +984,30 @@ enum SupervisorCommands {
     WindowsPeerWorker {
         #[arg(long)]
         output: PathBuf,
+        #[arg(long, default_value = "AstraGrid Peer Worker")]
+        task_name: String,
+        #[command(flatten)]
+        spec: PeerWorkerSupervisorArgs,
+    },
+    /// Generate systemd unit plus install/uninstall scripts for the peer sync worker.
+    SystemdPeerWorkerKit {
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "astragrid-peer-worker.service")]
+        unit_name: String,
+        #[arg(long, default_value = "AstraGrid peer sync worker")]
+        description: String,
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        restart_seconds: u32,
+        #[command(flatten)]
+        spec: PeerWorkerSupervisorArgs,
+    },
+    /// Generate Windows Scheduled Task install/uninstall scripts for the peer sync worker.
+    WindowsPeerWorkerKit {
+        #[arg(long)]
+        output_dir: PathBuf,
         #[arg(long, default_value = "AstraGrid Peer Worker")]
         task_name: String,
         #[command(flatten)]
@@ -1748,6 +1807,29 @@ fn main() -> Result<()> {
                     "evidence_bundles": dashboard.evidence_bundles.len(),
                 }))
             }
+            DashboardCommands::Serve {
+                ledger,
+                bind,
+                title,
+                db,
+                approvals,
+                peer_queue,
+                evidence_bundle,
+                map_href,
+                refresh_seconds,
+                max_requests,
+            } => print_json(&serve_dashboard(DashboardServeRequest {
+                ledger,
+                bind,
+                title,
+                db,
+                approvals,
+                peer_queue,
+                evidence_bundle,
+                map_href,
+                refresh_seconds,
+                max_requests,
+            })?),
         },
         Commands::Ops { command } => match command {
             OpsCommands::Bundle {
@@ -1779,6 +1861,9 @@ fn main() -> Result<()> {
                 quorum,
                 release_policy,
             })?),
+            OpsCommands::AcceptancePack { output_dir, title } => {
+                print_json(&write_acceptance_pack(&output_dir, &title)?)
+            }
         },
         Commands::Doctor { command } => match command {
             DoctorCommands::Workspace {
@@ -2098,6 +2183,57 @@ fn main() -> Result<()> {
                     "kind": "windows-peer-worker",
                 }))
             }
+            SupervisorCommands::SystemdPeerWorkerKit {
+                output_dir,
+                unit_name,
+                description,
+                user,
+                restart_seconds,
+                spec,
+            } => {
+                let unit = SystemdPeerWorkerUnit {
+                    unit_name: unit_name.clone(),
+                    description,
+                    user,
+                    restart_seconds,
+                    spec: spec.into(),
+                };
+                fs::create_dir_all(&output_dir)?;
+                let unit_path = output_dir.join(&unit_name);
+                let install_path = output_dir.join("install-systemd-peer-worker.sh");
+                let uninstall_path = output_dir.join("uninstall-systemd-peer-worker.sh");
+                write_text_file(&unit_path, &unit.render()?)?;
+                write_text_file(&install_path, &unit.render_install_script()?)?;
+                write_text_file(&uninstall_path, &unit.render_uninstall_script()?)?;
+                print_json(&json!({
+                    "output_dir": output_dir,
+                    "unit": unit_path,
+                    "install": install_path,
+                    "uninstall": uninstall_path,
+                    "kind": "systemd-peer-worker-kit",
+                }))
+            }
+            SupervisorCommands::WindowsPeerWorkerKit {
+                output_dir,
+                task_name,
+                spec,
+            } => {
+                let task = WindowsPeerWorkerTask {
+                    task_name,
+                    spec: spec.into(),
+                };
+                fs::create_dir_all(&output_dir)?;
+                let install_path = output_dir.join("install-windows-peer-worker.ps1");
+                let uninstall_path = output_dir.join("uninstall-windows-peer-worker.ps1");
+                write_text_file(&install_path, &task.render()?)?;
+                write_text_file(&uninstall_path, &task.render_uninstall_script()?)?;
+                print_json(&json!({
+                    "output_dir": output_dir,
+                    "install": install_path,
+                    "uninstall": uninstall_path,
+                    "kind": "windows-peer-worker-kit",
+                }))
+            }
         },
     }
 }
@@ -2116,6 +2252,100 @@ struct OpsBundleRequest {
     signatures: Vec<PathBuf>,
     quorum: Option<PathBuf>,
     release_policy: Option<PathBuf>,
+}
+
+struct DashboardServeRequest {
+    ledger: PathBuf,
+    bind: String,
+    title: String,
+    db: Option<PathBuf>,
+    approvals: Option<PathBuf>,
+    peer_queue: Option<PathBuf>,
+    evidence_bundle: Vec<PathBuf>,
+    map_href: Option<String>,
+    refresh_seconds: u64,
+    max_requests: Option<u32>,
+}
+
+fn serve_dashboard(request: DashboardServeRequest) -> Result<Value> {
+    let listener = TcpListener::bind(&request.bind)
+        .with_context(|| format!("failed to bind dashboard server to {}", request.bind))?;
+    let local_addr = listener.local_addr()?;
+    eprintln!("AstraGrid dashboard serving at http://{local_addr}/dashboard.html");
+    let mut served = 0_u32;
+    loop {
+        let (mut stream, _) = listener.accept()?;
+        handle_dashboard_stream(&request, &mut stream)?;
+        served += 1;
+        if request
+            .max_requests
+            .is_some_and(|max_requests| served >= max_requests)
+        {
+            break;
+        }
+    }
+    Ok(json!({
+        "bind": local_addr.to_string(),
+        "requests": served,
+    }))
+}
+
+fn handle_dashboard_stream(request: &DashboardServeRequest, stream: &mut TcpStream) -> Result<()> {
+    stream.set_read_timeout(Some(StdDuration::from_secs(5)))?;
+    let mut buffer = [0_u8; 4096];
+    let read = stream.read(&mut buffer)?;
+    let request_text = String::from_utf8_lossy(&buffer[..read]);
+    let path = http_request_path(&request_text).unwrap_or("/");
+    let response = match path {
+        "/" | "/dashboard.html" => {
+            let dashboard = build_dashboard_document(
+                &request.ledger,
+                request.title.clone(),
+                request.approvals.clone(),
+                request.db.clone(),
+                request.peer_queue.clone(),
+                &request.evidence_bundle,
+                request.map_href.clone(),
+            )?;
+            let html = inject_meta_refresh(&dashboard.to_html(), request.refresh_seconds);
+            http_response("200 OK", "text/html; charset=utf-8", html.as_bytes())
+        }
+        "/healthz" => http_response(
+            "200 OK",
+            "application/json; charset=utf-8",
+            br#"{"status":"ok"}"#,
+        ),
+        _ => http_response("404 Not Found", "text/plain; charset=utf-8", b"not found\n"),
+    };
+    stream.write_all(&response)?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn http_request_path(request: &str) -> Option<&str> {
+    let mut parts = request.lines().next()?.split_whitespace();
+    match (parts.next(), parts.next()) {
+        (Some("GET"), Some(path)) => Some(path),
+        _ => None,
+    }
+}
+
+fn http_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut response = header.into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+fn inject_meta_refresh(html: &str, seconds: u64) -> String {
+    if seconds == 0 {
+        return html.to_owned();
+    }
+    let tag = format!("<meta http-equiv=\"refresh\" content=\"{seconds}\">\n");
+    html.replacen("</head>", &format!("{tag}</head>"), 1)
 }
 
 fn export_ops_bundle(request: OpsBundleRequest) -> Result<Value> {
@@ -2223,6 +2453,164 @@ fn export_ops_bundle(request: OpsBundleRequest) -> Result<Value> {
         "workspace_status": workspace_report.status,
         "release_status": release_status,
     }))
+}
+
+fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
+    let script_path = output_dir.join("run-acceptance.ps1");
+    let scenario_path = output_dir.join("mission-scenario.json");
+    let manifest_path = output_dir.join("manifest.json");
+    write_text_file(&script_path, &render_acceptance_script(title))?;
+    write_json_file(&scenario_path, &acceptance_scenario())?;
+    let manifest = json!({
+        "schema": 1,
+        "title": title,
+        "generated_at": OffsetDateTime::now_utc().to_string(),
+        "files": [
+            {"name": "runner", "path": "run-acceptance.ps1", "kind": "powershell"},
+            {"name": "scenario", "path": "mission-scenario.json", "kind": "json"}
+        ],
+        "coverage": [
+            "identity",
+            "registry",
+            "signed ledger append",
+            "evidence bundle",
+            "workflow draft",
+            "approval append",
+            "store ingest",
+            "dashboard export",
+            "ops bundle",
+            "workspace doctor",
+            "package provenance"
+        ]
+    });
+    write_json_file(&manifest_path, &manifest)?;
+    Ok(json!({
+        "output_dir": output_dir,
+        "script": script_path,
+        "scenario": scenario_path,
+        "manifest": manifest_path,
+    }))
+}
+
+fn acceptance_scenario() -> Value {
+    json!({
+        "name": "flood-watch-acceptance",
+        "ledger": "scenario-mission.agl",
+        "store": "scenario-mission.db",
+        "steps": [
+            {"type": "init", "mission": "flood-watch", "operator": "kernel"},
+            {
+                "type": "append",
+                "actor": "lead",
+                "role": "incident_commander",
+                "action": "declare_incident",
+                "subject": "river-east",
+                "priority": "critical",
+                "payload": {"water_level_m": 5.2}
+            },
+            {"type": "verify_ledger"},
+            {"type": "ingest_store"},
+            {"type": "assert_state", "mission": "flood-watch", "open_incidents": 1},
+            {"type": "assert_store", "event_count": 2, "critical_event_count": 1}
+        ]
+    })
+}
+
+fn render_acceptance_script(title: &str) -> String {
+    let quoted_title = powershell_single_quote(title);
+    format!(
+        r#"
+param(
+    [string]$ProjectRoot = (Get-Location).Path,
+    [switch]$SkipPackage
+)
+
+$ErrorActionPreference = 'Stop'
+$PackRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Run = Join-Path $PackRoot 'run'
+New-Item -ItemType Directory -Path $Run -Force | Out-Null
+
+function Invoke-AstraGrid {{
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    & cargo run -q -p astragrid -- @Args
+    if ($LASTEXITCODE -ne 0) {{
+        throw "astragrid command failed: $($Args -join ' ')"
+    }}
+}}
+
+function Invoke-AstraGridJson {{
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    $output = & cargo run -q -p astragrid -- @Args
+    if ($LASTEXITCODE -ne 0) {{
+        throw "astragrid command failed: $($Args -join ' ')"
+    }}
+    $output | ConvertFrom-Json
+}}
+
+Push-Location $ProjectRoot
+try {{
+    $ledger = Join-Path $Run 'mission.agl'
+    $db = Join-Path $Run 'mission.db'
+    $identity = Join-Path $Run 'lead.agkey'
+    $passphrase = Join-Path $Run 'lead.pass'
+    $registry = Join-Path $Run 'operators.agregistry'
+    $payload = Join-Path $Run 'payload.json'
+    $evidence = Join-Path $Run 'evidence.json'
+    $bundle = Join-Path $Run 'close-bundle.json'
+    $draft = Join-Path $Run 'draft.json'
+    $approvals = Join-Path $Run 'approvals.agl'
+    $geo = Join-Path $Run 'features.geojson'
+    $features = Join-Path $Run 'features.jsonl'
+    $dashboard = Join-Path $Run 'dashboard.html'
+    $opsBundle = Join-Path $Run 'ops-bundle'
+    $scenario = Join-Path $PackRoot 'mission-scenario.json'
+    $scenarioRun = Join-Path $Run 'scenario'
+
+    'acceptance local passphrase' | Set-Content -Encoding UTF8 $passphrase
+    '{{"water_level_m":5.2}}' | Set-Content -Encoding UTF8 $payload
+    '[{{"id":"sensor-1","source":"river-gauge","kind":"sensor","confidence":0.94,"digest":"sensor-digest","excerpt":"water=5.2"}}]' | Set-Content -Encoding UTF8 $evidence
+    '{{"type":"Feature","id":"river-east","properties":{{"risk":"flood"}},"geometry":{{"type":"Point","coordinates":[72.2,31.2]}}}}' | Set-Content -Encoding UTF8 $geo
+
+    Invoke-AstraGrid init --mission flood-watch --ledger $ledger
+    Invoke-AstraGrid identity create --path $identity --name lead --role incident_commander --passphrase-file $passphrase
+    Invoke-AstraGrid identity registry-init --registry $registry --authority local-command
+    Invoke-AstraGrid identity enroll --registry $registry --identity $identity --passphrase-file $passphrase --issued-by local-command
+    Invoke-AstraGrid append-signed --ledger $ledger --identity $identity --passphrase-file $passphrase --registry $registry --action declare_incident --subject river-east --priority critical --payload "@$payload"
+    Invoke-AstraGrid verify --ledger $ledger
+    Invoke-AstraGrid store ingest --ledger $ledger --db $db
+    Invoke-AstraGrid evidence build --mission flood-watch --evidence $evidence --action close_incident --subject river-east --rationale 'Water receded below incident threshold.' --confidence 0.91 --evidence-id sensor-1 --output $bundle
+    Invoke-AstraGrid workflow draft --ledger $ledger --bundle $bundle --actor lead --role incident_commander --min-confidence 0.75 --output $draft
+    $approval = Invoke-AstraGridJson approval submit --queue $approvals --draft $draft --requested-by acceptance
+    Invoke-AstraGrid approval approve --queue $approvals --id $approval.id --reviewed-by lead --reason 'acceptance evidence verified'
+    Invoke-AstraGrid approval append-approved --queue $approvals --id $approval.id --ledger $ledger --identity $identity --passphrase-file $passphrase --registry $registry --executed-by lead
+    Invoke-AstraGrid approval verify --queue $approvals
+    Invoke-AstraGrid store ingest --ledger $ledger --db $db
+    Invoke-AstraGrid geo ingest --input $geo --output $features
+    Invoke-AstraGrid dashboard export --ledger $ledger --db $db --approvals $approvals --output $dashboard --title {quoted_title}
+    Invoke-AstraGrid ops bundle --ledger $ledger --db $db --approvals $approvals --identity $identity --features $features --output-dir $opsBundle --title {quoted_title}
+    Invoke-AstraGrid doctor workspace --ledger $ledger --db $db --identity $identity --approvals $approvals
+    Invoke-AstraGrid scenario run --input $scenario --workdir $scenarioRun
+
+    if (-not $SkipPackage) {{
+        .\tools\local\package-release.ps1
+        Invoke-AstraGrid provenance verify --input dist\astragrid-windows-x64-0.1.0.provenance.json
+        Invoke-AstraGrid doctor release --provenance dist\astragrid-windows-x64-0.1.0.provenance.json
+    }}
+}}
+finally {{
+    Pop-Location
+}}
+"#,
+        quoted_title = quoted_title,
+    )
+    .trim_start()
+    .to_owned()
+}
+
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn build_dashboard_document(
@@ -2454,7 +2842,9 @@ mod tests {
     use super::{
         Cli, Commands, DashboardCommands, DoctorCommands, GeoCommands, IdentityCommands,
         OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands, RecommendCommands,
-        default_signature_output_path, export_ops_bundle, read_payload,
+        acceptance_scenario, default_signature_output_path, export_ops_bundle, http_request_path,
+        http_response, inject_meta_refresh, read_payload, render_acceptance_script,
+        write_acceptance_pack,
     };
 
     #[test]
@@ -2654,6 +3044,58 @@ mod tests {
     }
 
     #[test]
+    fn parses_dashboard_serve_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "dashboard",
+            "serve",
+            "--ledger",
+            "data/mission.agl",
+            "--bind",
+            "127.0.0.1:18080",
+            "--refresh-seconds",
+            "3",
+            "--max-requests",
+            "1",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Dashboard {
+                command:
+                    DashboardCommands::Serve {
+                        ledger,
+                        bind,
+                        refresh_seconds,
+                        max_requests,
+                        ..
+                    },
+            } => {
+                assert_eq!(ledger, PathBuf::from("data/mission.agl"));
+                assert_eq!(bind, "127.0.0.1:18080");
+                assert_eq!(refresh_seconds, 3);
+                assert_eq!(max_requests, Some(1));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renders_dashboard_http_response_helpers() {
+        assert_eq!(
+            http_request_path("GET /dashboard.html HTTP/1.1\r\nHost: local\r\n\r\n"),
+            Some("/dashboard.html")
+        );
+        let refreshed = inject_meta_refresh("<html><head></head><body></body></html>", 7);
+        assert!(refreshed.contains("content=\"7\""));
+        let response = http_response("200 OK", "text/plain", b"ok");
+        let text = String::from_utf8(response).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+        assert!(text.contains("Content-Length: 2"));
+        assert!(text.ends_with("\r\n\r\nok"));
+    }
+
+    #[test]
     fn parses_ops_bundle_command() {
         let cli = Cli::try_parse_from([
             "astragrid",
@@ -2691,6 +3133,57 @@ mod tests {
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_ops_acceptance_pack_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "ops",
+            "acceptance-pack",
+            "--output-dir",
+            "ops/acceptance",
+            "--title",
+            "Acceptance",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Ops {
+                command: OpsCommands::AcceptancePack { output_dir, title },
+            } => {
+                assert_eq!(output_dir, PathBuf::from("ops/acceptance"));
+                assert_eq!(title, "Acceptance");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn writes_acceptance_pack_files() {
+        let dir = tempdir().unwrap();
+
+        let result = write_acceptance_pack(dir.path(), "Acceptance").unwrap();
+
+        assert!(dir.path().join("run-acceptance.ps1").exists());
+        assert!(dir.path().join("mission-scenario.json").exists());
+        assert_eq!(
+            result["output_dir"],
+            dir.path().to_string_lossy().to_string()
+        );
+        let script = fs::read_to_string(dir.path().join("run-acceptance.ps1")).unwrap();
+        assert!(script.contains("approval append-approved"));
+        assert!(script.contains("ops bundle"));
+        assert!(script.contains("package-release.ps1"));
+        let scenario = acceptance_scenario();
+        assert_eq!(scenario["name"], "flood-watch-acceptance");
+    }
+
+    #[test]
+    fn acceptance_script_quotes_titles() {
+        let script = render_acceptance_script("Lead's Acceptance");
+
+        assert!(script.contains("'Lead''s Acceptance'"));
     }
 
     #[test]
@@ -2910,6 +3403,55 @@ mod tests {
                 command: super::SupervisorCommands::SystemdPeerWorker { output, spec, .. },
             } => {
                 assert_eq!(output, PathBuf::from("ops/astragrid-peer-worker.service"));
+                assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_supervisor_worker_kits() {
+        let systemd = Cli::try_parse_from([
+            "astragrid",
+            "supervisor",
+            "systemd-peer-worker-kit",
+            "--output-dir",
+            "ops/systemd",
+            "--shared-key-file",
+            "secrets/peer.key",
+        ])
+        .unwrap();
+        match systemd.command {
+            Commands::Supervisor {
+                command:
+                    super::SupervisorCommands::SystemdPeerWorkerKit {
+                        output_dir, spec, ..
+                    },
+            } => {
+                assert_eq!(output_dir, PathBuf::from("ops/systemd"));
+                assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let windows = Cli::try_parse_from([
+            "astragrid",
+            "supervisor",
+            "windows-peer-worker-kit",
+            "--output-dir",
+            "ops/windows",
+            "--shared-key-file",
+            "secrets/peer.key",
+        ])
+        .unwrap();
+        match windows.command {
+            Commands::Supervisor {
+                command:
+                    super::SupervisorCommands::WindowsPeerWorkerKit {
+                        output_dir, spec, ..
+                    },
+            } => {
+                assert_eq!(output_dir, PathBuf::from("ops/windows"));
                 assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
