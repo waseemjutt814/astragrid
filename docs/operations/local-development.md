@@ -192,13 +192,20 @@ Use finite `--max-requests` during local smoke tests and omit it for long-runnin
 ```powershell
 $federationHealth = ".cache\federation-health-$id.json"
 $federationAudit = ".cache\federation-audit-$id.jsonl"
+$federationIdentity = ".cache\federation-peer-$id.agkey"
+$federationPassphrase = ".cache\federation-peer-$id.pass"
+$federationRegistry = ".cache\federation-operators-$id.agregistry"
+'federation peer passphrase' | Set-Content -Encoding UTF8 $federationPassphrase
+cargo run -q -p astragrid -- identity create --path $federationIdentity --name federation-peer --role operator --passphrase-file $federationPassphrase
+cargo run -q -p astragrid -- identity registry-init --registry $federationRegistry --authority local-federation
+cargo run -q -p astragrid -- identity enroll --registry $federationRegistry --identity $federationIdentity --passphrase-file $federationPassphrase --issued-by local-federation
 $federationServer = Start-Job -ScriptBlock {
-    param($ProjectRoot, $peerLedger, $sharedKey, $health, $audit)
+    param($ProjectRoot, $peerLedger, $sharedKey, $health, $audit, $registry)
     Set-Location $ProjectRoot
-    cargo run -q -p astragrid -- net serve-daemon --bind 127.0.0.1:17656 --ledger $peerLedger --shared-key-file $sharedKey --health-file $health --audit-log $audit --max-requests 1 --idle-timeout-seconds 15
-} -ArgumentList (Get-Location).Path, $peerLedger, $sharedKey, $federationHealth, $federationAudit
+    cargo run -q -p astragrid -- net serve-daemon --bind 127.0.0.1:17656 --ledger $peerLedger --shared-key-file $sharedKey --peer-registry $registry --health-file $health --audit-log $audit --max-requests 1 --idle-timeout-seconds 15
+} -ArgumentList (Get-Location).Path, $peerLedger, $sharedKey, $federationHealth, $federationAudit, $federationRegistry
 Start-Sleep -Seconds 2
-cargo run -q -p astragrid -- net fetch --addr 127.0.0.1:17656 --shared-key-file $sharedKey --output ".cache\federation-events-$id.json"
+cargo run -q -p astragrid -- net fetch --addr 127.0.0.1:17656 --shared-key-file $sharedKey --identity $federationIdentity --passphrase-file $federationPassphrase --output ".cache\federation-events-$id.json"
 Receive-Job $federationServer -Wait
 Get-Content $federationHealth
 Get-Content $federationAudit
@@ -215,18 +222,18 @@ cargo run -q -p astragrid -- peer-queue health --queue $peerQueue
 For supervised runs, use finite cycles during local validation and omit `--cycles` for daemon mode:
 
 ```powershell
-cargo run -q -p astragrid -- peer-queue worker --queue $peerQueue --ledger $ledger --shared-key-file $sharedKey --cycles 1 --interval-seconds 1
+cargo run -q -p astragrid -- peer-queue worker --queue $peerQueue --ledger $ledger --shared-key-file $sharedKey --identity $federationIdentity --passphrase-file $federationPassphrase --cycles 1 --interval-seconds 1
 ```
 
 Generate service manager artifacts for a long-running worker:
 
 ```powershell
-cargo run -q -p astragrid -- supervisor windows-peer-worker --output .cache\astragrid-peer-worker.ps1 --binary target\release\astragrid.exe --working-directory . --ledger $ledger --queue $peerQueue --shared-key-file $sharedKey
-cargo run -q -p astragrid -- supervisor systemd-peer-worker --output .cache\astragrid-peer-worker.service --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --user astragrid
-cargo run -q -p astragrid -- supervisor windows-peer-worker-kit --output-dir .cache\worker-kit-windows --binary target\release\astragrid.exe --working-directory . --ledger $ledger --queue $peerQueue --shared-key-file $sharedKey
-cargo run -q -p astragrid -- supervisor systemd-peer-worker-kit --output-dir .cache\worker-kit-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --user astragrid
-cargo run -q -p astragrid -- supervisor windows-federation-daemon-kit --output-dir .cache\federation-kit-windows --binary target\release\astragrid.exe --working-directory . --bind 127.0.0.1:17655 --ledger $ledger --shared-key-file $sharedKey --health-file .cache\federation-health-$id.json --audit-log .cache\federation-audit-$id.jsonl
-cargo run -q -p astragrid -- supervisor systemd-federation-daemon-kit --output-dir .cache\federation-kit-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
+cargo run -q -p astragrid -- supervisor windows-peer-worker --output .cache\astragrid-peer-worker.ps1 --binary target\release\astragrid.exe --working-directory . --ledger $ledger --queue $peerQueue --shared-key-file $sharedKey --identity $federationIdentity --identity-passphrase-file $federationPassphrase
+cargo run -q -p astragrid -- supervisor systemd-peer-worker --output .cache\astragrid-peer-worker.service --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --identity secrets/peer.agkey --identity-passphrase-file secrets/peer.pass --user astragrid
+cargo run -q -p astragrid -- supervisor windows-peer-worker-kit --output-dir .cache\worker-kit-windows --binary target\release\astragrid.exe --working-directory . --ledger $ledger --queue $peerQueue --shared-key-file $sharedKey --identity $federationIdentity --identity-passphrase-file $federationPassphrase
+cargo run -q -p astragrid -- supervisor systemd-peer-worker-kit --output-dir .cache\worker-kit-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --identity secrets/peer.agkey --identity-passphrase-file secrets/peer.pass --user astragrid
+cargo run -q -p astragrid -- supervisor windows-federation-daemon-kit --output-dir .cache\federation-kit-windows --binary target\release\astragrid.exe --working-directory . --bind 127.0.0.1:17655 --ledger $ledger --shared-key-file $sharedKey --peer-registry $federationRegistry --health-file .cache\federation-health-$id.json --audit-log .cache\federation-audit-$id.jsonl
+cargo run -q -p astragrid -- supervisor systemd-federation-daemon-kit --output-dir .cache\federation-kit-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --peer-registry data/operators.agregistry --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
 ```
 
 Exercise live worker recovery with a fail-once local worker:

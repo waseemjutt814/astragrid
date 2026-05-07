@@ -138,3 +138,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add install/uninstall kits for systemd and Windows federation daemon services.
 - [x] Add renderer and CLI parser tests for the daemon service artifacts.
 - [x] Extend acceptance coverage and docs for generated federation service kits.
+
+## Next Wave: Peer Registry Authorization
+
+- [x] Add signed peer challenge response on top of the shared-key peer protocol.
+- [x] Add daemon `--peer-registry` enforcement for active enrolled operator identities.
+- [x] Add signed client options to `net fetch`, `net plan-peers`, `peer-queue process`, and `peer-queue worker`.
+- [x] Add supervisor rendering for peer worker identities and federation daemon registries.
+- [x] Add protocol, parser, daemon, and acceptance coverage for registry-authorized peers.

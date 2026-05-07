@@ -23,8 +23,10 @@ use astragrid_geo::GeoFeatureSet;
 use astragrid_harvest::{HarvestRequest, SourceProfile, harvest_geojson, harvest_profile};
 use astragrid_map::{MapConsoleDocument, MapDocument};
 use astragrid_net::{
-    PeerEndpoint, fetch_ledger_snapshot, plan_multi_peer_sync, serve_ledger_connection,
-    serve_ledger_once,
+    PeerEndpoint, fetch_ledger_snapshot, fetch_ledger_snapshot_with_identity, plan_multi_peer_sync,
+    plan_multi_peer_sync_with_identity, serve_ledger_connection,
+    serve_ledger_connection_with_peer_registry, serve_ledger_once,
+    serve_ledger_once_with_peer_registry,
 };
 use astragrid_oskey::OsSealedSecret;
 use astragrid_policy_pack::{
@@ -910,6 +912,8 @@ enum NetCommands {
         ledger: PathBuf,
         #[arg(long)]
         shared_key_file: PathBuf,
+        #[arg(long)]
+        peer_registry: Option<PathBuf>,
     },
     /// Run a hardened authenticated ledger snapshot daemon.
     ServeDaemon {
@@ -923,6 +927,9 @@ enum NetCommands {
         health_file: Option<PathBuf>,
         #[arg(long)]
         audit_log: Option<PathBuf>,
+        /// Require peers to sign the session challenge with an active enrolled identity.
+        #[arg(long)]
+        peer_registry: Option<PathBuf>,
         /// Stop after this many accepted connections. Omit for long-running mode.
         #[arg(long)]
         max_requests: Option<u32>,
@@ -937,6 +944,10 @@ enum NetCommands {
         #[arg(long)]
         shared_key_file: PathBuf,
         #[arg(long)]
+        identity: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+        #[arg(long)]
         output: PathBuf,
     },
     /// Fetch and compare every peer from a JSON manifest.
@@ -947,6 +958,10 @@ enum NetCommands {
         manifest: PathBuf,
         #[arg(long)]
         shared_key_file: PathBuf,
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -990,6 +1005,10 @@ enum PeerQueueCommands {
         ledger: PathBuf,
         #[arg(long)]
         shared_key_file: PathBuf,
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
         #[arg(long, default_value_t = 10)]
         limit: u32,
         #[arg(long, default_value_t = 300)]
@@ -1003,6 +1022,10 @@ enum PeerQueueCommands {
         ledger: PathBuf,
         #[arg(long)]
         shared_key_file: PathBuf,
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
         #[arg(long, default_value_t = 10)]
         limit: u32,
         #[arg(long, default_value_t = 300)]
@@ -1611,6 +1634,10 @@ struct PeerWorkerSupervisorArgs {
     queue: PathBuf,
     #[arg(long)]
     shared_key_file: PathBuf,
+    #[arg(long)]
+    identity: Option<PathBuf>,
+    #[arg(long)]
+    identity_passphrase_file: Option<PathBuf>,
     #[arg(long, default_value_t = 10)]
     limit: u32,
     #[arg(long, default_value_t = 300)]
@@ -1627,6 +1654,8 @@ impl From<PeerWorkerSupervisorArgs> for PeerWorkerSupervisorSpec {
             ledger: value.ledger,
             queue: value.queue,
             shared_key_file: value.shared_key_file,
+            identity: value.identity,
+            identity_passphrase_file: value.identity_passphrase_file,
             limit: value.limit,
             retry_delay_seconds: value.retry_delay_seconds,
             interval_seconds: value.interval_seconds,
@@ -1646,6 +1675,8 @@ struct FederationDaemonSupervisorArgs {
     ledger: PathBuf,
     #[arg(long)]
     shared_key_file: PathBuf,
+    #[arg(long)]
+    peer_registry: Option<PathBuf>,
     #[arg(long, default_value = "data/federation-health.json")]
     health_file: PathBuf,
     #[arg(long, default_value = "data/federation-audit.jsonl")]
@@ -1664,6 +1695,7 @@ impl From<FederationDaemonSupervisorArgs> for FederationDaemonSupervisorSpec {
             bind: value.bind,
             ledger: value.ledger,
             shared_key_file: value.shared_key_file,
+            peer_registry: value.peer_registry,
             health_file: value.health_file,
             audit_log: value.audit_log,
             max_requests: value.max_requests,
@@ -2489,10 +2521,22 @@ fn main() -> Result<()> {
                 bind,
                 ledger,
                 shared_key_file,
+                peer_registry,
             } => {
                 let shared_key = read_passphrase_file(&shared_key_file)?;
                 let ledger = MissionLedger::open(ledger);
-                let addr = serve_ledger_once(bind, &ledger, &shared_key)?;
+                let addr = match peer_registry {
+                    Some(peer_registry) => {
+                        let peer_registry = OperatorRegistry::load_from_file(peer_registry)?;
+                        serve_ledger_once_with_peer_registry(
+                            bind,
+                            &ledger,
+                            &shared_key,
+                            &peer_registry,
+                        )?
+                    }
+                    None => serve_ledger_once(bind, &ledger, &shared_key)?,
+                };
                 print_json(&json!({
                     "served": true,
                     "addr": addr.to_string(),
@@ -2504,6 +2548,7 @@ fn main() -> Result<()> {
                 shared_key_file,
                 health_file,
                 audit_log,
+                peer_registry,
                 max_requests,
                 idle_timeout_seconds,
             } => print_json(&run_federation_daemon(FederationDaemonRequest {
@@ -2512,27 +2557,40 @@ fn main() -> Result<()> {
                 shared_key_file,
                 health_file,
                 audit_log,
+                peer_registry,
                 max_requests,
                 idle_timeout_seconds,
             })?),
             NetCommands::Fetch {
                 addr,
                 shared_key_file,
+                identity,
+                passphrase_file,
                 output,
             } => {
                 let shared_key = read_passphrase_file(&shared_key_file)?;
-                let snapshot = fetch_ledger_snapshot(addr, &shared_key)?;
+                let identity =
+                    load_optional_peer_identity(identity.as_ref(), passphrase_file.as_ref())?;
+                let snapshot = match identity.as_ref() {
+                    Some(identity) => {
+                        fetch_ledger_snapshot_with_identity(addr, &shared_key, identity)?
+                    }
+                    None => fetch_ledger_snapshot(addr, &shared_key)?,
+                };
                 write_json_file(&output, &snapshot.events)?;
                 print_json(&json!({
                     "output": output,
                     "events": snapshot.events.len(),
                     "valid": snapshot.verification.valid,
+                    "peer_identity_signed": identity.is_some(),
                 }))
             }
             NetCommands::PlanPeers {
                 ledger,
                 manifest,
                 shared_key_file,
+                identity,
+                passphrase_file,
                 output,
             } => {
                 let ledger = MissionLedger::open(ledger);
@@ -2542,7 +2600,15 @@ fn main() -> Result<()> {
                 }
                 let peers = read_peer_manifest(&manifest)?;
                 let shared_key = read_passphrase_file(&shared_key_file)?;
-                let report = plan_multi_peer_sync(&ledger.load_events()?, &peers, &shared_key);
+                let identity =
+                    load_optional_peer_identity(identity.as_ref(), passphrase_file.as_ref())?;
+                let events = ledger.load_events()?;
+                let report = match identity.as_ref() {
+                    Some(identity) => {
+                        plan_multi_peer_sync_with_identity(&events, &peers, &shared_key, identity)
+                    }
+                    None => plan_multi_peer_sync(&events, &peers, &shared_key),
+                };
                 match output {
                     Some(output) => {
                         write_json_file(&output, &report)?;
@@ -2594,6 +2660,8 @@ fn main() -> Result<()> {
                 queue,
                 ledger,
                 shared_key_file,
+                identity,
+                passphrase_file,
                 limit,
                 retry_delay_seconds,
             } => {
@@ -2601,22 +2669,32 @@ fn main() -> Result<()> {
                     bail!("retry delay cannot be negative");
                 }
                 let shared_key = read_passphrase_file(&shared_key_file)?;
+                let identity =
+                    load_optional_peer_identity(identity.as_ref(), passphrase_file.as_ref())?;
                 let queue = PeerSyncQueue::open(queue)?;
                 let ledger = MissionLedger::open(ledger);
-                let report = queue.process_due_with_shared_key(
-                    &ledger,
-                    &shared_key,
-                    QueueProcessOptions {
-                        limit,
-                        retry_delay: Duration::seconds(retry_delay_seconds),
-                    },
-                )?;
+                let options = QueueProcessOptions {
+                    limit,
+                    retry_delay: Duration::seconds(retry_delay_seconds),
+                };
+                let report = match identity.as_ref() {
+                    Some(identity) => queue.process_due_with(&ledger, options, |peer| {
+                        fetch_ledger_snapshot_with_identity(
+                            peer.addr.as_str(),
+                            &shared_key,
+                            identity,
+                        )
+                    })?,
+                    None => queue.process_due_with_shared_key(&ledger, &shared_key, options)?,
+                };
                 print_json(&report)
             }
             PeerQueueCommands::Worker {
                 queue,
                 ledger,
                 shared_key_file,
+                identity,
+                passphrase_file,
                 limit,
                 retry_delay_seconds,
                 interval_seconds,
@@ -2626,6 +2704,8 @@ fn main() -> Result<()> {
                     bail!("retry delay cannot be negative");
                 }
                 let shared_key = read_passphrase_file(&shared_key_file)?;
+                let identity =
+                    load_optional_peer_identity(identity.as_ref(), passphrase_file.as_ref())?;
                 let queue = PeerSyncQueue::open(queue)?;
                 let ledger = MissionLedger::open(ledger);
                 let options = QueueProcessOptions {
@@ -2640,8 +2720,16 @@ fn main() -> Result<()> {
                 let mut cycle_summaries = Vec::new();
 
                 loop {
-                    let report =
-                        queue.process_due_with_shared_key(&ledger, &shared_key, options)?;
+                    let report = match identity.as_ref() {
+                        Some(identity) => queue.process_due_with(&ledger, options, |peer| {
+                            fetch_ledger_snapshot_with_identity(
+                                peer.addr.as_str(),
+                                &shared_key,
+                                identity,
+                            )
+                        })?,
+                        None => queue.process_due_with_shared_key(&ledger, &shared_key, options)?,
+                    };
                     let cycle = summarize_queue_cycle(completed_cycles + 1, &report.results);
                     processed_results += report.results.len();
                     succeeded += cycle["succeeded"].as_u64().unwrap_or(0) as usize;
@@ -3668,6 +3756,7 @@ struct FederationDaemonRequest {
     shared_key_file: PathBuf,
     health_file: Option<PathBuf>,
     audit_log: Option<PathBuf>,
+    peer_registry: Option<PathBuf>,
     max_requests: Option<u32>,
     idle_timeout_seconds: u64,
 }
@@ -3687,6 +3776,8 @@ struct FederationDaemonReport {
     idle_timeout_seconds: u64,
     health_file: Option<PathBuf>,
     audit_log: Option<PathBuf>,
+    peer_registry: Option<PathBuf>,
+    peer_authorization_required: bool,
     last_error: Option<String>,
 }
 
@@ -3915,6 +4006,11 @@ fn run_federation_daemon(request: FederationDaemonRequest) -> Result<FederationD
         bail!("federation daemon max requests must be greater than zero");
     }
     let shared_key = read_passphrase_file(&request.shared_key_file)?;
+    let peer_registry = request
+        .peer_registry
+        .as_ref()
+        .map(OperatorRegistry::load_from_file)
+        .transpose()?;
     let ledger = MissionLedger::open(&request.ledger);
     let verification = ledger.verify()?;
     if !verification.valid {
@@ -3955,6 +4051,8 @@ fn run_federation_daemon(request: FederationDaemonRequest) -> Result<FederationD
             "local_addr": &local_addr,
             "ledger": &request.ledger,
             "ledger_sha256": &ledger_sha256,
+            "peer_registry": &request.peer_registry,
+            "peer_authorization_required": peer_registry.is_some(),
             "max_requests": request.max_requests,
             "idle_timeout_seconds": request.idle_timeout_seconds,
         }),
@@ -3984,6 +4082,7 @@ fn run_federation_daemon(request: FederationDaemonRequest) -> Result<FederationD
 
         match listener.accept() {
             Ok((stream, peer_addr)) => {
+                stream.set_nonblocking(false)?;
                 accepted_requests = accepted_requests.saturating_add(1);
                 last_activity = Instant::now();
                 write_optional_jsonl(
@@ -3995,7 +4094,16 @@ fn run_federation_daemon(request: FederationDaemonRequest) -> Result<FederationD
                         "accepted_requests": accepted_requests,
                     }),
                 )?;
-                match serve_ledger_connection(stream, &ledger, &shared_key) {
+                let serve_result = match peer_registry.as_ref() {
+                    Some(peer_registry) => serve_ledger_connection_with_peer_registry(
+                        stream,
+                        &ledger,
+                        &shared_key,
+                        peer_registry,
+                    ),
+                    None => serve_ledger_connection(stream, &ledger, &shared_key),
+                };
+                match serve_result {
                     Ok(()) => {
                         served_requests = served_requests.saturating_add(1);
                         write_optional_jsonl(
@@ -4099,6 +4207,8 @@ fn run_federation_daemon(request: FederationDaemonRequest) -> Result<FederationD
         idle_timeout_seconds: request.idle_timeout_seconds,
         health_file: request.health_file,
         audit_log: request.audit_log,
+        peer_registry: request.peer_registry,
+        peer_authorization_required: peer_registry.is_some(),
         last_error,
     })
 }
@@ -4122,6 +4232,8 @@ fn write_federation_health(
             "local_addr": local_addr,
             "ledger": &request.ledger,
             "ledger_sha256": ledger_sha256,
+            "peer_registry": &request.peer_registry,
+            "peer_authorization_required": request.peer_registry.is_some(),
             "accepted_requests": snapshot.accepted_requests,
             "served_requests": snapshot.served_requests,
             "failed_requests": snapshot.failed_requests,
@@ -5560,6 +5672,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "quorum registry enrollment",
             "worker watchdog recovery",
             "hardened federation daemon",
+            "signed peer registry authorization",
             "federation daemon supervisor artifacts",
             "package provenance"
         ]
@@ -5677,6 +5790,9 @@ try {{
     $federationOut = Join-Path $Run 'federation-events.json'
     $federationHealth = Join-Path $Run 'federation-health.json'
     $federationAudit = Join-Path $Run 'federation-audit.jsonl'
+    $federationIdentity = Join-Path $Run 'federation-peer.agkey'
+    $federationPassphrase = Join-Path $Run 'federation-peer.pass'
+    $federationRegistry = Join-Path $Run 'federation-operators.agregistry'
     $federationSystemdKit = Join-Path $Run 'federation-systemd-kit'
     $federationWindowsKit = Join-Path $Run 'federation-windows-kit'
     $federationPort = Get-Random -Minimum 20000 -Maximum 30000
@@ -5689,6 +5805,7 @@ try {{
     '{{"team_id":"alpha"}}' | Set-Content -Encoding UTF8 $dispatchPayload
     '{{"note":"vault runtime append"}}' | Set-Content -Encoding UTF8 $vaultPayload
     'acceptance federation shared key' | Set-Content -Encoding UTF8 $federationKey
+    'acceptance federation peer passphrase' | Set-Content -Encoding UTF8 $federationPassphrase
 @'
 param([string]$State)
 if (-not (Test-Path $State)) {{
@@ -5713,27 +5830,33 @@ exit 0
     Invoke-AstraGrid supervisor watchdog-run --name acceptance-worker --command powershell --arg -NoProfile --arg -ExecutionPolicy --arg Bypass --arg -File --arg $watchdogScript --arg $watchdogState --audit-log $watchdogAudit --max-restarts 2 --restart-delay-ms 0
 
     Invoke-AstraGrid init --mission flood-watch --ledger $ledger
+    Invoke-AstraGrid identity create --path $federationIdentity --name federation-peer --role operator --passphrase-file $federationPassphrase
+    Invoke-AstraGrid identity registry-init --registry $federationRegistry --authority federation-acceptance
+    Invoke-AstraGrid identity enroll --registry $federationRegistry --identity $federationIdentity --passphrase-file $federationPassphrase --issued-by acceptance
     $federationServer = Start-Job -ScriptBlock {{
-        param($ProjectRoot, $Bind, $Ledger, $SharedKey, $Health, $Audit)
+        param($ProjectRoot, $Bind, $Ledger, $SharedKey, $Health, $Audit, $Registry)
         Set-Location $ProjectRoot
-        cargo run -q -p astragrid -- net serve-daemon --bind $Bind --ledger $Ledger --shared-key-file $SharedKey --health-file $Health --audit-log $Audit --max-requests 1 --idle-timeout-seconds 15
+        cargo run -q -p astragrid -- net serve-daemon --bind $Bind --ledger $Ledger --shared-key-file $SharedKey --peer-registry $Registry --health-file $Health --audit-log $Audit --max-requests 1 --idle-timeout-seconds 15
         if ($LASTEXITCODE -ne 0) {{ throw "federation daemon exited with code $LASTEXITCODE" }}
-    }} -ArgumentList $ProjectRoot, $federationBind, $ledger, $federationKey, $federationHealth, $federationAudit
+    }} -ArgumentList $ProjectRoot, $federationBind, $ledger, $federationKey, $federationHealth, $federationAudit, $federationRegistry
     $deadline = (Get-Date).AddSeconds(30)
     while (-not (Test-Path $federationHealth)) {{
         if ((Get-Date) -gt $deadline) {{ throw 'federation daemon did not write health file' }}
         Start-Sleep -Milliseconds 200
     }}
-    Invoke-AstraGrid net fetch --addr $federationBind --shared-key-file $federationKey --output $federationOut
+    Invoke-AstraGrid net fetch --addr $federationBind --shared-key-file $federationKey --identity $federationIdentity --passphrase-file $federationPassphrase --output $federationOut
     Receive-Job $federationServer -Wait -ErrorAction Stop
     $federationHealthJson = Get-Content -Raw $federationHealth | ConvertFrom-Json
     if ($federationHealthJson.status -ne 'stopped') {{ throw "unexpected federation daemon status: $($federationHealthJson.status)" }}
+    if ($federationHealthJson.peer_authorization_required -ne $true) {{ throw 'federation daemon did not require peer registry authorization' }}
     if ($federationHealthJson.served_requests -lt 1) {{ throw 'federation daemon did not serve a peer request' }}
     if (-not (Select-String -LiteralPath $federationAudit -Pattern 'peer_request_served' -Quiet)) {{ throw 'federation audit did not record served peer request' }}
-    Invoke-AstraGrid supervisor systemd-federation-daemon-kit --output-dir $federationSystemdKit --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
-    Invoke-AstraGrid supervisor windows-federation-daemon-kit --output-dir $federationWindowsKit --binary target\release\astragrid.exe --working-directory . --bind $federationBind --ledger $ledger --shared-key-file $federationKey --health-file $federationHealth --audit-log $federationAudit --max-requests 1 --idle-timeout-seconds 15
+    Invoke-AstraGrid supervisor systemd-federation-daemon-kit --output-dir $federationSystemdKit --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --peer-registry data/operators.agregistry --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
+    Invoke-AstraGrid supervisor windows-federation-daemon-kit --output-dir $federationWindowsKit --binary target\release\astragrid.exe --working-directory . --bind $federationBind --ledger $ledger --shared-key-file $federationKey --peer-registry $federationRegistry --health-file $federationHealth --audit-log $federationAudit --max-requests 1 --idle-timeout-seconds 15
     if (-not (Select-String -LiteralPath (Join-Path $federationSystemdKit 'astragrid-federation-daemon.service') -Pattern 'serve-daemon' -Quiet)) {{ throw 'systemd federation kit does not call serve-daemon' }}
+    if (-not (Select-String -LiteralPath (Join-Path $federationSystemdKit 'astragrid-federation-daemon.service') -Pattern 'peer-registry' -Quiet)) {{ throw 'systemd federation kit does not include peer registry' }}
     if (-not (Select-String -LiteralPath (Join-Path $federationWindowsKit 'install-windows-federation-daemon.ps1') -Pattern 'serve-daemon' -Quiet)) {{ throw 'windows federation kit does not call serve-daemon' }}
+    if (-not (Select-String -LiteralPath (Join-Path $federationWindowsKit 'install-windows-federation-daemon.ps1') -Pattern 'peer-registry' -Quiet)) {{ throw 'windows federation kit does not include peer registry' }}
     Invoke-AstraGrid identity create --path $identity --name lead --role incident_commander --passphrase-file $passphrase
     Invoke-AstraGrid identity create --path $deputyIdentity --name deputy --role incident_commander --passphrase-file $deputyPassphrase
     Invoke-AstraGrid identity create --path $medicIdentity --name medic --role operator --passphrase-file $medicPassphrase
@@ -7218,6 +7341,19 @@ fn load_keypair(
     }
 }
 
+fn load_optional_peer_identity(
+    identity: Option<&PathBuf>,
+    passphrase_file: Option<&PathBuf>,
+) -> Result<Option<OperatorKeypair>> {
+    match (identity, passphrase_file) {
+        (Some(identity), passphrase_file) => {
+            Ok(Some(load_keypair(identity, passphrase_file, None)?))
+        }
+        (None, Some(_)) => bail!("--passphrase-file requires --identity"),
+        (None, None) => Ok(None),
+    }
+}
+
 fn read_peer_manifest(path: &PathBuf) -> Result<Vec<PeerEndpoint>> {
     let value: Value = read_json_file(path).context("peer manifest must be JSON")?;
     if value.is_array() {
@@ -7764,6 +7900,8 @@ mod tests {
             "ops/federation-health.json",
             "--audit-log",
             "ops/federation-audit.jsonl",
+            "--peer-registry",
+            "ops/operators.agregistry",
             "--max-requests",
             "1",
             "--idle-timeout-seconds",
@@ -7780,6 +7918,7 @@ mod tests {
                         shared_key_file,
                         health_file,
                         audit_log,
+                        peer_registry,
                         max_requests,
                         idle_timeout_seconds,
                     },
@@ -7792,8 +7931,116 @@ mod tests {
                     Some(PathBuf::from("ops/federation-health.json"))
                 );
                 assert_eq!(audit_log, Some(PathBuf::from("ops/federation-audit.jsonl")));
+                assert_eq!(
+                    peer_registry,
+                    Some(PathBuf::from("ops/operators.agregistry"))
+                );
                 assert_eq!(max_requests, Some(1));
                 assert_eq!(idle_timeout_seconds, 5);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_net_signed_peer_fetch_and_plan_commands() {
+        let fetch = Cli::try_parse_from([
+            "astragrid",
+            "net",
+            "fetch",
+            "--addr",
+            "127.0.0.1:17655",
+            "--shared-key-file",
+            "secrets/peer.key",
+            "--identity",
+            "secrets/peer.agkey",
+            "--passphrase-file",
+            "secrets/peer.pass",
+            "--output",
+            "ops/events.json",
+        ])
+        .unwrap();
+        match fetch.command.expect("command") {
+            Commands::Net {
+                command:
+                    NetCommands::Fetch {
+                        addr,
+                        identity,
+                        passphrase_file,
+                        output,
+                        ..
+                    },
+            } => {
+                assert_eq!(addr, "127.0.0.1:17655");
+                assert_eq!(identity, Some(PathBuf::from("secrets/peer.agkey")));
+                assert_eq!(passphrase_file, Some(PathBuf::from("secrets/peer.pass")));
+                assert_eq!(output, PathBuf::from("ops/events.json"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let plan = Cli::try_parse_from([
+            "astragrid",
+            "net",
+            "plan-peers",
+            "--manifest",
+            "ops/peers.json",
+            "--shared-key-file",
+            "secrets/peer.key",
+            "--identity",
+            "secrets/peer.agkey",
+            "--passphrase-file",
+            "secrets/peer.pass",
+        ])
+        .unwrap();
+        match plan.command.expect("command") {
+            Commands::Net {
+                command:
+                    NetCommands::PlanPeers {
+                        manifest,
+                        identity,
+                        passphrase_file,
+                        ..
+                    },
+            } => {
+                assert_eq!(manifest, PathBuf::from("ops/peers.json"));
+                assert_eq!(identity, Some(PathBuf::from("secrets/peer.agkey")));
+                assert_eq!(passphrase_file, Some(PathBuf::from("secrets/peer.pass")));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_peer_queue_signed_worker_identity_options() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "peer-queue",
+            "worker",
+            "--shared-key-file",
+            "secrets/peer.key",
+            "--identity",
+            "secrets/peer.agkey",
+            "--passphrase-file",
+            "secrets/peer.pass",
+            "--cycles",
+            "1",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::PeerQueue {
+                command:
+                    PeerQueueCommands::Worker {
+                        identity,
+                        passphrase_file,
+                        cycles,
+                        ..
+                    },
+            } => {
+                assert_eq!(identity, Some(PathBuf::from("secrets/peer.agkey")));
+                assert_eq!(passphrase_file, Some(PathBuf::from("secrets/peer.pass")));
+                assert_eq!(cycles, Some(1));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -7827,6 +8074,7 @@ mod tests {
             shared_key_file: shared_key_path,
             health_file: Some(health_path.clone()),
             audit_log: Some(audit_path.clone()),
+            peer_registry: None,
             max_requests: Some(1),
             idle_timeout_seconds: 5,
         };
@@ -7858,6 +8106,75 @@ mod tests {
     }
 
     #[test]
+    fn federation_daemon_accepts_registry_authorized_peer() {
+        let dir = tempdir().unwrap();
+        let ledger_path = dir.path().join("mission.agl");
+        let shared_key_path = dir.path().join("peer.key");
+        let registry_path = dir.path().join("operators.agregistry");
+        let health_path = dir.path().join("federation-health.json");
+        let audit_path = dir.path().join("federation-audit.jsonl");
+        fs::write(&shared_key_path, b"shared\n").unwrap();
+        let peer_key =
+            astragrid_core::OperatorKeypair::generate("peer-a", astragrid_core::Role::Operator);
+        let mut registry = astragrid_core::OperatorRegistry::new("local");
+        registry
+            .enroll(peer_key.identity().clone(), "test")
+            .unwrap();
+        registry.save_to_file(&registry_path).unwrap();
+        let ledger = astragrid_core::MissionLedger::open(&ledger_path);
+        ledger
+            .append(astragrid_core::CommandRequest::new(
+                astragrid_core::Actor::new("kernel", astragrid_core::Role::System),
+                astragrid_core::Action::OpenMission,
+                "registry-federation-ready",
+                astragrid_core::Priority::Elevated,
+                json!({"mission": "registry-federation-ready"}),
+            ))
+            .unwrap();
+        let probe = TestTcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        let request = FederationDaemonRequest {
+            bind: addr.to_string(),
+            ledger: ledger_path.clone(),
+            shared_key_file: shared_key_path,
+            health_file: Some(health_path.clone()),
+            audit_log: Some(audit_path.clone()),
+            peer_registry: Some(registry_path.clone()),
+            max_requests: Some(1),
+            idle_timeout_seconds: 5,
+        };
+        let handle = thread::spawn(move || run_federation_daemon(request));
+        for _ in 0..100 {
+            if health_path.exists() {
+                break;
+            }
+            thread::sleep(TestDuration::from_millis(50));
+        }
+        assert!(health_path.exists());
+
+        let snapshot =
+            astragrid_net::fetch_ledger_snapshot_with_identity(addr, b"shared", &peer_key);
+        let report = handle.join().unwrap();
+        assert!(
+            snapshot.is_ok() && report.is_ok(),
+            "snapshot={snapshot:?} report={report:?}"
+        );
+        let snapshot = snapshot.unwrap();
+        let report = report.unwrap();
+
+        assert!(snapshot.verification.valid);
+        assert!(report.peer_authorization_required);
+        assert_eq!(report.peer_registry, Some(registry_path));
+        assert_eq!(report.served_requests, 1);
+        let health: serde_json::Value = read_json_file(&health_path).unwrap();
+        assert_eq!(health["peer_authorization_required"], true);
+        let audit = fs::read_to_string(audit_path).unwrap();
+        assert!(audit.contains("\"peer_authorization_required\":true"));
+    }
+
+    #[test]
     fn federation_daemon_rejects_zero_max_requests() {
         let dir = tempdir().unwrap();
         let error = run_federation_daemon(FederationDaemonRequest {
@@ -7866,6 +8183,7 @@ mod tests {
             shared_key_file: dir.path().join("missing.key"),
             health_file: None,
             audit_log: None,
+            peer_registry: None,
             max_requests: Some(0),
             idle_timeout_seconds: 0,
         })
@@ -9529,6 +9847,10 @@ mod tests {
             "ops/astragrid-peer-worker.service",
             "--shared-key-file",
             "secrets/peer.key",
+            "--identity",
+            "secrets/peer.agkey",
+            "--identity-passphrase-file",
+            "secrets/peer.pass",
         ])
         .unwrap();
 
@@ -9538,6 +9860,11 @@ mod tests {
             } => {
                 assert_eq!(output, PathBuf::from("ops/astragrid-peer-worker.service"));
                 assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+                assert_eq!(spec.identity, Some(PathBuf::from("secrets/peer.agkey")));
+                assert_eq!(
+                    spec.identity_passphrase_file,
+                    Some(PathBuf::from("secrets/peer.pass"))
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -9553,6 +9880,8 @@ mod tests {
             "ops/systemd",
             "--shared-key-file",
             "secrets/peer.key",
+            "--identity",
+            "secrets/peer.agkey",
         ])
         .unwrap();
         match systemd.command.expect("command") {
@@ -9564,6 +9893,7 @@ mod tests {
             } => {
                 assert_eq!(output_dir, PathBuf::from("ops/systemd"));
                 assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+                assert_eq!(spec.identity, Some(PathBuf::from("secrets/peer.agkey")));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -9576,6 +9906,8 @@ mod tests {
             "ops/windows",
             "--shared-key-file",
             "secrets/peer.key",
+            "--identity",
+            "secrets/peer.agkey",
         ])
         .unwrap();
         match windows.command.expect("command") {
@@ -9587,6 +9919,7 @@ mod tests {
             } => {
                 assert_eq!(output_dir, PathBuf::from("ops/windows"));
                 assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+                assert_eq!(spec.identity, Some(PathBuf::from("secrets/peer.agkey")));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -9602,6 +9935,8 @@ mod tests {
             "ops/astragrid-federation-daemon.service",
             "--shared-key-file",
             "secrets/peer.key",
+            "--peer-registry",
+            "ops/operators.agregistry",
             "--health-file",
             "ops/federation-health.json",
             "--audit-log",
@@ -9622,6 +9957,10 @@ mod tests {
                     PathBuf::from("ops/federation-health.json")
                 );
                 assert_eq!(spec.audit_log, PathBuf::from("ops/federation-audit.jsonl"));
+                assert_eq!(
+                    spec.peer_registry,
+                    Some(PathBuf::from("ops/operators.agregistry"))
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -9634,6 +9973,8 @@ mod tests {
             "ops/windows-federation",
             "--shared-key-file",
             "secrets/peer.key",
+            "--peer-registry",
+            "ops/operators.agregistry",
             "--max-requests",
             "1",
         ])
@@ -9647,6 +9988,10 @@ mod tests {
             } => {
                 assert_eq!(output_dir, PathBuf::from("ops/windows-federation"));
                 assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+                assert_eq!(
+                    spec.peer_registry,
+                    Some(PathBuf::from("ops/operators.agregistry"))
+                );
                 assert_eq!(spec.max_requests, Some(1));
             }
             other => panic!("unexpected command parsed: {other:?}"),

@@ -9,6 +9,8 @@ pub struct PeerWorkerSupervisorSpec {
     pub ledger: PathBuf,
     pub queue: PathBuf,
     pub shared_key_file: PathBuf,
+    pub identity: Option<PathBuf>,
+    pub identity_passphrase_file: Option<PathBuf>,
     pub limit: u32,
     pub retry_delay_seconds: i64,
     pub interval_seconds: u64,
@@ -21,6 +23,7 @@ pub struct FederationDaemonSupervisorSpec {
     pub bind: String,
     pub ledger: PathBuf,
     pub shared_key_file: PathBuf,
+    pub peer_registry: Option<PathBuf>,
     pub health_file: PathBuf,
     pub audit_log: PathBuf,
     pub max_requests: Option<u32>,
@@ -34,6 +37,17 @@ impl PeerWorkerSupervisorSpec {
         validate_path("ledger", &self.ledger)?;
         validate_path("queue", &self.queue)?;
         validate_path("shared_key_file", &self.shared_key_file)?;
+        if let Some(identity) = &self.identity {
+            validate_path("identity", identity)?;
+        }
+        if let Some(identity_passphrase_file) = &self.identity_passphrase_file {
+            validate_path("identity_passphrase_file", identity_passphrase_file)?;
+        }
+        if self.identity.is_none() && self.identity_passphrase_file.is_some() {
+            return Err(SupervisorError::InvalidValue(
+                "identity_passphrase_file requires identity".to_owned(),
+            ));
+        }
         if self.limit == 0 {
             return Err(SupervisorError::InvalidValue(
                 "limit must be greater than zero".to_owned(),
@@ -54,7 +68,7 @@ impl PeerWorkerSupervisorSpec {
 
     pub fn worker_args(&self) -> Result<Vec<String>, SupervisorError> {
         self.validate()?;
-        Ok(vec![
+        let mut args = vec![
             "peer-queue".to_owned(),
             "worker".to_owned(),
             "--queue".to_owned(),
@@ -63,13 +77,28 @@ impl PeerWorkerSupervisorSpec {
             self.ledger.to_string_lossy().into_owned(),
             "--shared-key-file".to_owned(),
             self.shared_key_file.to_string_lossy().into_owned(),
+        ];
+        if let Some(identity) = &self.identity {
+            args.extend([
+                "--identity".to_owned(),
+                identity.to_string_lossy().into_owned(),
+            ]);
+        }
+        if let Some(identity_passphrase_file) = &self.identity_passphrase_file {
+            args.extend([
+                "--passphrase-file".to_owned(),
+                identity_passphrase_file.to_string_lossy().into_owned(),
+            ]);
+        }
+        args.extend([
             "--limit".to_owned(),
             self.limit.to_string(),
             "--retry-delay-seconds".to_owned(),
             self.retry_delay_seconds.to_string(),
             "--interval-seconds".to_owned(),
             self.interval_seconds.to_string(),
-        ])
+        ]);
+        Ok(args)
     }
 }
 
@@ -85,6 +114,9 @@ impl FederationDaemonSupervisorSpec {
         }
         validate_path("ledger", &self.ledger)?;
         validate_path("shared_key_file", &self.shared_key_file)?;
+        if let Some(peer_registry) = &self.peer_registry {
+            validate_path("peer_registry", peer_registry)?;
+        }
         validate_path("health_file", &self.health_file)?;
         validate_path("audit_log", &self.audit_log)?;
         if self.max_requests == Some(0) {
@@ -106,13 +138,21 @@ impl FederationDaemonSupervisorSpec {
             self.ledger.to_string_lossy().into_owned(),
             "--shared-key-file".to_owned(),
             self.shared_key_file.to_string_lossy().into_owned(),
+        ];
+        if let Some(peer_registry) = &self.peer_registry {
+            args.extend([
+                "--peer-registry".to_owned(),
+                peer_registry.to_string_lossy().into_owned(),
+            ]);
+        }
+        args.extend([
             "--health-file".to_owned(),
             self.health_file.to_string_lossy().into_owned(),
             "--audit-log".to_owned(),
             self.audit_log.to_string_lossy().into_owned(),
             "--idle-timeout-seconds".to_owned(),
             self.idle_timeout_seconds.to_string(),
-        ];
+        ]);
         if let Some(max_requests) = self.max_requests {
             args.extend(["--max-requests".to_owned(), max_requests.to_string()]);
         }
@@ -459,6 +499,8 @@ mod tests {
             ledger: PathBuf::from("data/mission.agl"),
             queue: PathBuf::from("data/peer-sync.db"),
             shared_key_file: PathBuf::from("secrets/peer.key"),
+            identity: None,
+            identity_passphrase_file: None,
             limit: 10,
             retry_delay_seconds: 300,
             interval_seconds: 30,
@@ -472,6 +514,7 @@ mod tests {
             bind: "127.0.0.1:17655".to_owned(),
             ledger: PathBuf::from("data/mission.agl"),
             shared_key_file: PathBuf::from("secrets/peer.key"),
+            peer_registry: Some(PathBuf::from("data/operators.agregistry")),
             health_file: PathBuf::from("data/federation-health.json"),
             audit_log: PathBuf::from("data/federation-audit.jsonl"),
             max_requests: None,
@@ -511,6 +554,7 @@ mod tests {
 
         assert!(rendered.contains("[Service]"));
         assert!(rendered.contains("\"/usr/local/bin/astragrid\" \"net\" \"serve-daemon\""));
+        assert!(rendered.contains("\"--peer-registry\" \"data/operators.agregistry\""));
         assert!(rendered.contains("\"--health-file\" \"data/federation-health.json\""));
         assert!(rendered.contains("User=astragrid"));
     }
@@ -520,6 +564,8 @@ mod tests {
         let mut spec = spec();
         spec.binary = PathBuf::from("D:\\astragrid\\target\\release\\astragrid.exe");
         spec.working_directory = PathBuf::from("D:\\astragrid");
+        spec.identity = Some(PathBuf::from("D:\\astragrid\\peer.agkey"));
+        spec.identity_passphrase_file = Some(PathBuf::from("D:\\astragrid\\peer.pass"));
         let task = WindowsPeerWorkerTask {
             task_name: "AstraGrid Peer Worker".to_owned(),
             spec,
@@ -529,6 +575,8 @@ mod tests {
 
         assert!(rendered.contains("New-ScheduledTaskAction"));
         assert!(rendered.contains("'D:\\astragrid\\target\\release\\astragrid.exe'"));
+        assert!(rendered.contains("--identity"));
+        assert!(rendered.contains("--passphrase-file"));
         assert!(rendered.contains("Register-ScheduledTask"));
     }
 
@@ -547,6 +595,7 @@ mod tests {
 
         assert!(rendered.contains("New-ScheduledTaskAction"));
         assert!(rendered.contains("serve-daemon"));
+        assert!(rendered.contains("peer-registry"));
         assert!(rendered.contains("--max-requests"));
         assert!(rendered.contains("Register-ScheduledTask"));
     }
@@ -607,12 +656,19 @@ mod tests {
 
     #[test]
     fn rejects_newline_in_supervisor_paths() {
-        let mut spec = spec();
-        spec.queue = PathBuf::from("data\nbad.db");
+        let mut unsafe_path_spec = spec();
+        unsafe_path_spec.queue = PathBuf::from("data\nbad.db");
 
         assert!(matches!(
-            spec.worker_args(),
+            unsafe_path_spec.worker_args(),
             Err(SupervisorError::UnsafeText { field: "queue" })
+        ));
+
+        let mut missing_identity_spec = spec();
+        missing_identity_spec.identity_passphrase_file = Some(PathBuf::from("peer.pass"));
+        assert!(matches!(
+            missing_identity_spec.worker_args(),
+            Err(SupervisorError::InvalidValue(_))
         ));
     }
 

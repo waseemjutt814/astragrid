@@ -159,20 +159,22 @@ failure. It exits with failure when the restart budget is exhausted.
 Run the authenticated local ledger snapshot service with explicit health and audit outputs:
 
 ```powershell
-.\target\release\astragrid.exe net serve-daemon --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl
+.\target\release\astragrid.exe net serve-daemon --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --peer-registry ops\field\data\operators\operators.agregistry --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl
 ```
 
 For package or field smoke tests, add finite shutdown controls:
 
 ```powershell
-.\target\release\astragrid.exe net serve-daemon --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl --max-requests 1 --idle-timeout-seconds 15
+.\target\release\astragrid.exe net serve-daemon --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --peer-registry ops\field\data\operators\operators.agregistry --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl --max-requests 1 --idle-timeout-seconds 15
+.\target\release\astragrid.exe net fetch --addr 127.0.0.1:17655 --shared-key-file ops\field\data\peer.key --identity ops\field\data\operators\lead.agkey --passphrase-file ops\field\data\operators\lead.pass --output ops\field\data\federation-events.json
 ```
 
 Generate installable service kits before deploying the daemon as a host service:
 
 ```powershell
-.\target\release\astragrid.exe supervisor windows-federation-daemon-kit --output-dir ops\field\services\federation-windows --binary .\target\release\astragrid.exe --working-directory . --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl
-.\target\release\astragrid.exe supervisor systemd-federation-daemon-kit --output-dir ops\field\services\federation-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
+.\target\release\astragrid.exe supervisor windows-peer-worker-kit --output-dir ops\field\services\peer-worker-windows --binary .\target\release\astragrid.exe --working-directory . --ledger ops\field\data\mission.agl --queue ops\field\data\peer-sync.db --shared-key-file ops\field\data\peer.key --identity ops\field\data\operators\lead.agkey --identity-passphrase-file ops\field\data\operators\lead.pass
+.\target\release\astragrid.exe supervisor windows-federation-daemon-kit --output-dir ops\field\services\federation-windows --binary .\target\release\astragrid.exe --working-directory . --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --peer-registry ops\field\data\operators\operators.agregistry --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl
+.\target\release\astragrid.exe supervisor systemd-federation-daemon-kit --output-dir ops\field\services\federation-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --peer-registry data/operators/operators.agregistry --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
 ```
 
 ## Update And Release Evidence
@@ -214,5 +216,8 @@ Delete only after reviewing the report:
   in the JSONL audit log.
 - Federation daemon startup failure: `net serve-daemon` refuses corrupt ledgers before binding and
   writes health/audit lifecycle evidence when configured.
+- Federation peer rejection: `net serve-daemon --peer-registry` closes the request before snapshot
+  transfer when the client omits `--identity`, signs with an unenrolled key, or signs with a
+  revoked registry identity.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

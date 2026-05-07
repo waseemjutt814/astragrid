@@ -222,7 +222,10 @@ The CLI can also read a peer manifest and produce one sync plan per peer. `net s
 hardens the same authenticated snapshot path for longer service runs: it verifies the local ledger
 before binding, accepts requests without shelling out, keeps bad peer requests isolated from the
 listener, writes a health JSON file, writes JSONL audit events, supports finite `--max-requests`
-smoke runs, and can stop after an explicit idle timeout.
+smoke runs, and can stop after an explicit idle timeout. Operators can add `--peer-registry` to
+require clients to sign the session challenge with an active enrolled operator identity before any
+snapshot is served. `net fetch`, `net plan-peers`, `peer-queue process`, and `peer-queue worker`
+can pass `--identity` and `--passphrase-file` to satisfy that registry-bound challenge.
 
 ## Durable Peer Queue
 
@@ -246,9 +249,9 @@ operator runbooks can detect exhausted recovery instead of assuming the worker i
 
 `astragrid-supervisor` renders service-manager artifacts for both peer queue workers and the
 authenticated federation daemon. The generated systemd units and Windows Scheduled Task scripts
-call the real CLI entry points with explicit ledger, shared-key, health, and audit paths. Kit
-commands include install and uninstall wrappers so operators can review the generated service
-contract before installing it on a host.
+call the real CLI entry points with explicit ledger, shared-key, peer identity or peer registry,
+health, and audit paths. Kit commands include install and uninstall wrappers so operators can
+review the generated service contract before installing it on a host.
 
 ## Harvesting
 
