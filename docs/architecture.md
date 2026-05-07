@@ -234,8 +234,11 @@ status, attempts, retry timing, last error, and the last sync/apply result. `pee
 fetches due peer snapshots, compares them against the local ledger, applies only append-only
 suffixes, and records success or retry/failure state. This keeps network sync recoverable without
 requiring a separate scheduler. `peer-queue worker` runs the same processor for finite cycles or
-as a long-lived daemon loop. `peer-queue health` returns a snapshot of due jobs, stale retrying
-jobs, failed counts, and recent errors for dashboards and supervisor probes.
+as a long-lived daemon loop. It can write a service health JSON file and JSONL audit stream for
+worker start, cycle summaries, failures, and stopped state, so service managers and dashboards can
+probe the real queue loop instead of inferring liveness from the process table. `peer-queue health`
+returns a snapshot of due jobs, stale retrying jobs, failed counts, and recent errors for dashboards
+and supervisor probes.
 
 ## Worker Watchdog
 

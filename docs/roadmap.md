@@ -121,6 +121,14 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add parser and executable tests for watchdog recovery and failure paths.
 - [x] Extend acceptance coverage and docs for live worker recovery.
 
+## Next Wave: Replication Worker Service Hardening
+
+- [x] Add optional `peer-queue worker --health-file` JSON output with lifecycle status and queue health.
+- [x] Add optional `peer-queue worker --audit-log` JSONL records for start, cycles, failures, and stop.
+- [x] Add stale retry threshold handling to worker health output.
+- [x] Wire peer worker supervisor artifacts to render health, audit, and stale-threshold arguments.
+- [x] Add parser, executable worker, supervisor, and acceptance coverage.
+
 ## Next Wave: Federation Daemon Service Hardening
 
 - [x] Add `net serve-daemon` for authenticated ledger snapshot service runs.

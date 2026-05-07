@@ -148,11 +148,13 @@ Use the vault path when the primary at-rest ledger artifact must stay encrypted:
 Wrap local long-running workers with a capped restart watchdog when you need a recovery audit:
 
 ```powershell
-.\target\release\astragrid.exe supervisor watchdog-run --name peer-worker --command .\target\release\astragrid.exe --arg peer-queue --arg worker --arg --queue --arg ops\field\data\peer-sync.db --arg --ledger --arg ops\field\data\mission.agl --arg --shared-key-file --arg ops\field\data\peer.key --arg --cycles --arg 1 --audit-log ops\field\data\watchdog.jsonl --max-restarts 3 --restart-delay-ms 1000
+.\target\release\astragrid.exe supervisor watchdog-run --name peer-worker --command .\target\release\astragrid.exe --arg peer-queue --arg worker --arg --queue --arg ops\field\data\peer-sync.db --arg --ledger --arg ops\field\data\mission.agl --arg --shared-key-file --arg ops\field\data\peer.key --arg --health-file --arg ops\field\data\peer-worker-health.json --arg --audit-log --arg ops\field\data\peer-worker-audit.jsonl --arg --cycles --arg 1 --audit-log ops\field\data\watchdog.jsonl --max-restarts 3 --restart-delay-ms 1000
 ```
 
 The watchdog writes one JSON object per line for every attempt, restart, recovery, or final
 failure. It exits with failure when the restart budget is exhausted.
+The peer worker also writes its own health JSON and JSONL cycle audit, so the watchdog audit and
+replication audit can be inspected separately.
 
 ## Federation Daemon
 
@@ -172,8 +174,9 @@ For package or field smoke tests, add finite shutdown controls:
 Generate installable service kits before deploying the daemon as a host service:
 
 ```powershell
-.\target\release\astragrid.exe supervisor windows-peer-worker-kit --output-dir ops\field\services\peer-worker-windows --binary .\target\release\astragrid.exe --working-directory . --ledger ops\field\data\mission.agl --queue ops\field\data\peer-sync.db --shared-key-file ops\field\data\peer.key --identity ops\field\data\operators\lead.agkey --identity-passphrase-file ops\field\data\operators\lead.pass
+.\target\release\astragrid.exe supervisor windows-peer-worker-kit --output-dir ops\field\services\peer-worker-windows --binary .\target\release\astragrid.exe --working-directory . --ledger ops\field\data\mission.agl --queue ops\field\data\peer-sync.db --shared-key-file ops\field\data\peer.key --identity ops\field\data\operators\lead.agkey --identity-passphrase-file ops\field\data\operators\lead.pass --health-file ops\field\data\peer-worker-health.json --audit-log ops\field\data\peer-worker-audit.jsonl
 .\target\release\astragrid.exe supervisor windows-federation-daemon-kit --output-dir ops\field\services\federation-windows --binary .\target\release\astragrid.exe --working-directory . --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --peer-registry ops\field\data\operators\operators.agregistry --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl
+.\target\release\astragrid.exe supervisor systemd-peer-worker-kit --output-dir ops\field\services\peer-worker-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --identity data/operators/lead.agkey --identity-passphrase-file data/operators/lead.pass --health-file data/peer-worker-health.json --audit-log data/peer-worker-audit.jsonl --user astragrid
 .\target\release\astragrid.exe supervisor systemd-federation-daemon-kit --output-dir ops\field\services\federation-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --peer-registry data/operators/operators.agregistry --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
 ```
 

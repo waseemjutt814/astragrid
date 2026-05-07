@@ -49,7 +49,8 @@ use astragrid_supervisor::{
 };
 use astragrid_sync::{SyncPlan, apply_append_only};
 use astragrid_sync_queue::{
-    PeerSyncQueue, ProcessOutcome, QueueProcessOptions, QueueProcessResult, QueueStatus,
+    PeerSyncQueue, ProcessOutcome, QueueHealthSnapshot, QueueHealthStatus, QueueProcessOptions,
+    QueueProcessResult, QueueStatus,
 };
 use astragrid_workflow::{CommandDraft, WorkflowPlanner, actor_from_parts};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -1035,6 +1036,14 @@ enum PeerQueueCommands {
         /// Number of cycles to run. Omit for daemon mode.
         #[arg(long)]
         cycles: Option<u32>,
+        /// Optional health JSON path for service managers and dashboards.
+        #[arg(long)]
+        health_file: Option<PathBuf>,
+        /// Optional JSON Lines audit log path for worker lifecycle and cycle records.
+        #[arg(long)]
+        audit_log: Option<PathBuf>,
+        #[arg(long, default_value_t = 600)]
+        stale_after_seconds: i64,
     },
 }
 
@@ -1644,6 +1653,12 @@ struct PeerWorkerSupervisorArgs {
     retry_delay_seconds: i64,
     #[arg(long, default_value_t = 30)]
     interval_seconds: u64,
+    #[arg(long, default_value = "data/peer-worker-health.json")]
+    health_file: Option<PathBuf>,
+    #[arg(long, default_value = "data/peer-worker-audit.jsonl")]
+    audit_log: Option<PathBuf>,
+    #[arg(long, default_value_t = 600)]
+    stale_after_seconds: i64,
 }
 
 impl From<PeerWorkerSupervisorArgs> for PeerWorkerSupervisorSpec {
@@ -1659,6 +1674,9 @@ impl From<PeerWorkerSupervisorArgs> for PeerWorkerSupervisorSpec {
             limit: value.limit,
             retry_delay_seconds: value.retry_delay_seconds,
             interval_seconds: value.interval_seconds,
+            health_file: value.health_file,
+            audit_log: value.audit_log,
+            stale_after_seconds: value.stale_after_seconds,
         }
     }
 }
@@ -2699,61 +2717,23 @@ fn main() -> Result<()> {
                 retry_delay_seconds,
                 interval_seconds,
                 cycles,
-            } => {
-                if retry_delay_seconds < 0 {
-                    bail!("retry delay cannot be negative");
-                }
-                let shared_key = read_passphrase_file(&shared_key_file)?;
-                let identity =
-                    load_optional_peer_identity(identity.as_ref(), passphrase_file.as_ref())?;
-                let queue = PeerSyncQueue::open(queue)?;
-                let ledger = MissionLedger::open(ledger);
-                let options = QueueProcessOptions {
-                    limit,
-                    retry_delay: Duration::seconds(retry_delay_seconds),
-                };
-                let mut completed_cycles = 0_u32;
-                let mut processed_results = 0_usize;
-                let mut succeeded = 0_usize;
-                let mut retry_scheduled = 0_usize;
-                let mut failed = 0_usize;
-                let mut cycle_summaries = Vec::new();
-
-                loop {
-                    let report = match identity.as_ref() {
-                        Some(identity) => queue.process_due_with(&ledger, options, |peer| {
-                            fetch_ledger_snapshot_with_identity(
-                                peer.addr.as_str(),
-                                &shared_key,
-                                identity,
-                            )
-                        })?,
-                        None => queue.process_due_with_shared_key(&ledger, &shared_key, options)?,
-                    };
-                    let cycle = summarize_queue_cycle(completed_cycles + 1, &report.results);
-                    processed_results += report.results.len();
-                    succeeded += cycle["succeeded"].as_u64().unwrap_or(0) as usize;
-                    retry_scheduled += cycle["retry_scheduled"].as_u64().unwrap_or(0) as usize;
-                    failed += cycle["failed"].as_u64().unwrap_or(0) as usize;
-                    cycle_summaries.push(cycle);
-                    completed_cycles += 1;
-
-                    if cycles.is_some_and(|limit| completed_cycles >= limit) {
-                        break;
-                    }
-
-                    std::thread::sleep(std::time::Duration::from_secs(interval_seconds));
-                }
-
-                print_json(&json!({
-                    "cycles": completed_cycles,
-                    "processed_results": processed_results,
-                    "succeeded": succeeded,
-                    "retry_scheduled": retry_scheduled,
-                    "failed": failed,
-                    "cycle_summaries": cycle_summaries,
-                }))
-            }
+                health_file,
+                audit_log,
+                stale_after_seconds,
+            } => print_json(&run_peer_queue_worker(PeerQueueWorkerRequest {
+                queue,
+                ledger,
+                shared_key_file,
+                identity,
+                passphrase_file,
+                limit,
+                retry_delay_seconds,
+                interval_seconds,
+                cycles,
+                health_file,
+                audit_log,
+                stale_after_seconds,
+            })?),
         },
         Commands::Harvest { command } => match command {
             HarvestCommands::Geojson {
@@ -3760,6 +3740,41 @@ struct FederationDaemonRequest {
     peer_registry: Option<PathBuf>,
     max_requests: Option<u32>,
     idle_timeout_seconds: u64,
+}
+
+struct PeerQueueWorkerRequest {
+    queue: PathBuf,
+    ledger: PathBuf,
+    shared_key_file: PathBuf,
+    identity: Option<PathBuf>,
+    passphrase_file: Option<PathBuf>,
+    limit: u32,
+    retry_delay_seconds: i64,
+    interval_seconds: u64,
+    cycles: Option<u32>,
+    health_file: Option<PathBuf>,
+    audit_log: Option<PathBuf>,
+    stale_after_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PeerQueueWorkerReport {
+    healthy: bool,
+    status: String,
+    queue: PathBuf,
+    ledger: PathBuf,
+    signed_identity: bool,
+    cycles: u32,
+    processed_results: usize,
+    succeeded: usize,
+    retry_scheduled: usize,
+    failed: usize,
+    health_file: Option<PathBuf>,
+    audit_log: Option<PathBuf>,
+    stale_after_seconds: i64,
+    last_health: QueueHealthSnapshot,
+    cycle_summaries: Vec<Value>,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5673,6 +5688,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "signed policy rule pack",
             "quorum registry enrollment",
             "worker watchdog recovery",
+            "peer worker service health audit",
             "hardened federation daemon",
             "signed peer registry authorization",
             "federation daemon supervisor artifacts",
@@ -5788,6 +5804,11 @@ try {{
     $watchdogScript = Join-Path $Run 'watchdog-worker.ps1'
     $watchdogState = Join-Path $Run 'watchdog-worker.state'
     $watchdogAudit = Join-Path $Run 'watchdog-audit.jsonl'
+    $peerWorkerQueue = Join-Path $Run 'peer-worker.db'
+    $peerWorkerHealth = Join-Path $Run 'peer-worker-health.json'
+    $peerWorkerAudit = Join-Path $Run 'peer-worker-audit.jsonl'
+    $peerWorkerSystemdKit = Join-Path $Run 'peer-worker-systemd-kit'
+    $peerWorkerWindowsKit = Join-Path $Run 'peer-worker-windows-kit'
     $federationKey = Join-Path $Run 'federation.key'
     $federationOut = Join-Path $Run 'federation-events.json'
     $federationHealth = Join-Path $Run 'federation-health.json'
@@ -5830,6 +5851,15 @@ exit 0
     Invoke-AstraGrid vault append --ledger $vault --passphrase-file $passphrase --actor lead --role incident_commander --action annotate_situation --subject river-east --payload "@$vaultPayload"
     Invoke-AstraGrid vault verify --ledger $vault --passphrase-file $passphrase
     Invoke-AstraGrid supervisor watchdog-run --name acceptance-worker --command powershell --arg -NoProfile --arg -ExecutionPolicy --arg Bypass --arg -File --arg $watchdogScript --arg $watchdogState --audit-log $watchdogAudit --max-restarts 2 --restart-delay-ms 0
+    Invoke-AstraGrid peer-queue worker --queue $peerWorkerQueue --ledger $ledger --shared-key-file $federationKey --health-file $peerWorkerHealth --audit-log $peerWorkerAudit --cycles 1 --interval-seconds 1 --stale-after-seconds 60
+    $peerWorkerHealthJson = Get-Content -Raw $peerWorkerHealth | ConvertFrom-Json
+    if ($peerWorkerHealthJson.status -ne 'stopped') {{ throw "unexpected peer worker status: $($peerWorkerHealthJson.status)" }}
+    if ($peerWorkerHealthJson.queue_health_status -ne 'healthy') {{ throw "unexpected peer worker queue health: $($peerWorkerHealthJson.queue_health_status)" }}
+    if (-not (Select-String -LiteralPath $peerWorkerAudit -Pattern 'peer_worker_cycle' -Quiet)) {{ throw 'peer worker audit did not record cycle' }}
+    Invoke-AstraGrid supervisor systemd-peer-worker-kit --output-dir $peerWorkerSystemdKit --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-worker.db --shared-key-file secrets/peer.key --health-file data/peer-worker-health.json --audit-log data/peer-worker-audit.jsonl --user astragrid
+    Invoke-AstraGrid supervisor windows-peer-worker-kit --output-dir $peerWorkerWindowsKit --binary target\release\astragrid.exe --working-directory . --ledger $ledger --queue $peerWorkerQueue --shared-key-file $federationKey --health-file $peerWorkerHealth --audit-log $peerWorkerAudit --interval-seconds 1
+    if (-not (Select-String -LiteralPath (Join-Path $peerWorkerSystemdKit 'astragrid-peer-worker.service') -Pattern 'peer-worker-health' -Quiet)) {{ throw 'systemd peer worker kit does not include health file' }}
+    if (-not (Select-String -LiteralPath (Join-Path $peerWorkerWindowsKit 'install-windows-peer-worker.ps1') -Pattern 'peer-worker-audit' -Quiet)) {{ throw 'windows peer worker kit does not include audit log' }}
 
     Invoke-AstraGrid init --mission flood-watch --ledger $ledger
     Invoke-AstraGrid identity create --path $federationIdentity --name federation-peer --role operator --passphrase-file $federationPassphrase
@@ -7065,6 +7095,247 @@ fn build_dashboard_document(
     .map_err(Into::into)
 }
 
+fn run_peer_queue_worker(request: PeerQueueWorkerRequest) -> Result<PeerQueueWorkerReport> {
+    if request.limit == 0 {
+        bail!("worker limit must be greater than zero");
+    }
+    if request.retry_delay_seconds < 0 {
+        bail!("retry delay cannot be negative");
+    }
+    if request.interval_seconds == 0 {
+        bail!("worker interval must be greater than zero");
+    }
+    if request.stale_after_seconds < 0 {
+        bail!("stale threshold cannot be negative");
+    }
+    if request.cycles.is_some_and(|cycles| cycles == 0) {
+        bail!("worker cycles must be greater than zero when supplied");
+    }
+
+    let shared_key = read_passphrase_file(&request.shared_key_file)?;
+    let identity =
+        load_optional_peer_identity(request.identity.as_ref(), request.passphrase_file.as_ref())?;
+    let signed_identity = identity.is_some();
+    let queue = PeerSyncQueue::open(&request.queue)?;
+    let ledger = MissionLedger::open(&request.ledger);
+    let options = QueueProcessOptions {
+        limit: request.limit,
+        retry_delay: Duration::seconds(request.retry_delay_seconds),
+    };
+    let stale_after = Duration::seconds(request.stale_after_seconds);
+
+    let mut completed_cycles = 0_u32;
+    let mut processed_results = 0_usize;
+    let mut succeeded = 0_usize;
+    let mut retry_scheduled = 0_usize;
+    let mut failed = 0_usize;
+    let mut cycle_summaries = Vec::new();
+    let mut last_health = queue.health(stale_after)?;
+
+    write_peer_worker_health(
+        &request,
+        PeerWorkerHealthInput {
+            lifecycle_status: "running",
+            completed_cycles,
+            processed_results,
+            succeeded,
+            retry_scheduled,
+            failed,
+            queue_health: &last_health,
+            last_error: None,
+        },
+    )?;
+    write_peer_worker_audit(
+        request.audit_log.as_ref(),
+        json!({
+            "event": "peer_worker_started",
+            "queue": &request.queue,
+            "ledger": &request.ledger,
+            "limit": request.limit,
+            "retry_delay_seconds": request.retry_delay_seconds,
+            "interval_seconds": request.interval_seconds,
+            "cycles": request.cycles,
+            "health_file": &request.health_file,
+            "signed_identity": signed_identity,
+        }),
+    )?;
+
+    loop {
+        let cycle_number = completed_cycles + 1;
+        let report = match identity.as_ref() {
+            Some(identity) => queue.process_due_with(&ledger, options, |peer| {
+                fetch_ledger_snapshot_with_identity(peer.addr.as_str(), &shared_key, identity)
+            }),
+            None => queue.process_due_with_shared_key(&ledger, &shared_key, options),
+        };
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                let message = error.to_string();
+                last_health = queue.health(stale_after)?;
+                write_peer_worker_health(
+                    &request,
+                    PeerWorkerHealthInput {
+                        lifecycle_status: "failed",
+                        completed_cycles,
+                        processed_results,
+                        succeeded,
+                        retry_scheduled,
+                        failed,
+                        queue_health: &last_health,
+                        last_error: Some(&message),
+                    },
+                )?;
+                write_peer_worker_audit(
+                    request.audit_log.as_ref(),
+                    json!({
+                        "event": "peer_worker_failed",
+                        "cycle": cycle_number,
+                        "error": message,
+                    }),
+                )?;
+                return Err(error.into());
+            }
+        };
+
+        let cycle = summarize_queue_cycle(cycle_number, &report.results);
+        processed_results += report.results.len();
+        succeeded += cycle["succeeded"].as_u64().unwrap_or(0) as usize;
+        retry_scheduled += cycle["retry_scheduled"].as_u64().unwrap_or(0) as usize;
+        failed += cycle["failed"].as_u64().unwrap_or(0) as usize;
+        completed_cycles = cycle_number;
+        last_health = queue.health(stale_after)?;
+        write_peer_worker_audit(
+            request.audit_log.as_ref(),
+            json!({
+                "event": "peer_worker_cycle",
+                "cycle": cycle_number,
+                "processed": report.results.len(),
+                "succeeded": cycle["succeeded"],
+                "retry_scheduled": cycle["retry_scheduled"],
+                "failed": cycle["failed"],
+                "queue_health_status": queue_health_status_label(last_health.status),
+                "due": last_health.due,
+                "stale_retrying": last_health.stale_retrying,
+            }),
+        )?;
+        cycle_summaries.push(cycle);
+
+        let final_cycle = request
+            .cycles
+            .is_some_and(|limit| completed_cycles >= limit);
+        write_peer_worker_health(
+            &request,
+            PeerWorkerHealthInput {
+                lifecycle_status: if final_cycle { "stopped" } else { "running" },
+                completed_cycles,
+                processed_results,
+                succeeded,
+                retry_scheduled,
+                failed,
+                queue_health: &last_health,
+                last_error: None,
+            },
+        )?;
+
+        if final_cycle {
+            break;
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(request.interval_seconds));
+    }
+
+    write_peer_worker_audit(
+        request.audit_log.as_ref(),
+        json!({
+            "event": "peer_worker_stopped",
+            "cycles": completed_cycles,
+            "processed_results": processed_results,
+            "succeeded": succeeded,
+            "retry_scheduled": retry_scheduled,
+            "failed": failed,
+            "queue_health_status": queue_health_status_label(last_health.status),
+        }),
+    )?;
+
+    Ok(PeerQueueWorkerReport {
+        healthy: last_health.status != QueueHealthStatus::Failing,
+        status: "stopped".to_owned(),
+        queue: request.queue,
+        ledger: request.ledger,
+        signed_identity,
+        cycles: completed_cycles,
+        processed_results,
+        succeeded,
+        retry_scheduled,
+        failed,
+        health_file: request.health_file,
+        audit_log: request.audit_log,
+        stale_after_seconds: request.stale_after_seconds,
+        last_health,
+        cycle_summaries,
+        last_error: None,
+    })
+}
+
+struct PeerWorkerHealthInput<'a> {
+    lifecycle_status: &'a str,
+    completed_cycles: u32,
+    processed_results: usize,
+    succeeded: usize,
+    retry_scheduled: usize,
+    failed: usize,
+    queue_health: &'a QueueHealthSnapshot,
+    last_error: Option<&'a str>,
+}
+
+fn write_peer_worker_health(
+    request: &PeerQueueWorkerRequest,
+    input: PeerWorkerHealthInput<'_>,
+) -> Result<()> {
+    let Some(path) = request.health_file.as_ref() else {
+        return Ok(());
+    };
+    write_json_file(
+        path,
+        &json!({
+            "schema_version": 1,
+            "kind": "peer_queue_worker",
+            "healthy": input.last_error.is_none()
+                && input.queue_health.status != QueueHealthStatus::Failing,
+            "status": input.lifecycle_status,
+            "queue_health_status": queue_health_status_label(input.queue_health.status),
+            "queue": &request.queue,
+            "ledger": &request.ledger,
+            "signed_identity": request.identity.is_some(),
+            "cycles": input.completed_cycles,
+            "processed_results": input.processed_results,
+            "succeeded": input.succeeded,
+            "retry_scheduled": input.retry_scheduled,
+            "failed": input.failed,
+            "stale_after_seconds": request.stale_after_seconds,
+            "checked_at": OffsetDateTime::now_utc(),
+            "queue_health": input.queue_health,
+            "last_error": input.last_error,
+        }),
+    )
+}
+
+fn write_peer_worker_audit(path: Option<&PathBuf>, event: Value) -> Result<()> {
+    if let Some(path) = path {
+        write_watchdog_audit(path, event)?;
+    }
+    Ok(())
+}
+
+fn queue_health_status_label(status: QueueHealthStatus) -> &'static str {
+    match status {
+        QueueHealthStatus::Healthy => "healthy",
+        QueueHealthStatus::Degraded => "degraded",
+        QueueHealthStatus::Failing => "failing",
+    }
+}
+
 fn summarize_queue_cycle(cycle: u32, results: &[QueueProcessResult]) -> Value {
     let mut succeeded = 0_usize;
     let mut retry_scheduled = 0_usize;
@@ -7423,23 +7694,24 @@ mod tests {
         ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands,
         DevicePairingRequest, DoctorCommands, FederationDaemonRequest, FirstRunRequest,
         GeoCommands, IdentityCommands, NetCommands, OpsBundleRequest, OpsCommands,
-        PeerQueueCommands, PolicyPackCommands, ProvenanceCommands, ReadinessGateRequest,
-        RecommendCommands, RegistryQuorumChangeKind, RegistryQuorumProposalRequest,
-        ReleaseCustodyPackRequest, ReleaseEvidencePackRequest, RestoreRequest,
-        RotateOperatorRequest, SetupCommands, TeamAppendRequest, TeamSessionIssueRequest,
-        VaultAppendRequest, VaultCommands, WorkerWatchdogRequest, WorkspaceProfile,
-        acceptance_scenario, apply_registry_quorum_proposal, authorize_team_action,
-        build_registry_trust_bundle, create_device_pairing, create_registry_quorum_proposal,
-        default_signature_output_path, evaluate_policy_pack_file, export_ops_bundle,
-        http_request_path, http_response, import_registry_trust_bundle, inject_meta_refresh,
-        issue_team_session, read_json_file, read_payload, render_acceptance_script,
-        render_default_launcher, restore_workspace_backup, rotate_operator_key,
-        run_artifact_retention, run_federation_daemon, run_first_run_setup, run_profile_doctor,
-        run_readiness_gate, run_worker_watchdog, sha256_file_hex, sign_registry_quorum_proposal,
-        team_append_signed, vault_append, vault_init, vault_tail, vault_verify,
-        verify_device_pairing_file, verify_policy_pack_file, verify_registry_quorum_proposal_file,
-        verify_registry_trust_bundle, verify_team_session_file, write_acceptance_pack,
-        write_release_custody_pack, write_release_evidence_pack, write_workspace_backup,
+        PeerQueueCommands, PeerQueueWorkerRequest, PolicyPackCommands, ProvenanceCommands,
+        ReadinessGateRequest, RecommendCommands, RegistryQuorumChangeKind,
+        RegistryQuorumProposalRequest, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
+        RestoreRequest, RotateOperatorRequest, SetupCommands, TeamAppendRequest,
+        TeamSessionIssueRequest, VaultAppendRequest, VaultCommands, WorkerWatchdogRequest,
+        WorkspaceProfile, acceptance_scenario, apply_registry_quorum_proposal,
+        authorize_team_action, build_registry_trust_bundle, create_device_pairing,
+        create_registry_quorum_proposal, default_signature_output_path, evaluate_policy_pack_file,
+        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
+        inject_meta_refresh, issue_team_session, read_json_file, read_payload,
+        render_acceptance_script, render_default_launcher, restore_workspace_backup,
+        rotate_operator_key, run_artifact_retention, run_federation_daemon, run_first_run_setup,
+        run_peer_queue_worker, run_profile_doctor, run_readiness_gate, run_worker_watchdog,
+        sha256_file_hex, sign_registry_quorum_proposal, team_append_signed, vault_append,
+        vault_init, vault_tail, vault_verify, verify_device_pairing_file, verify_policy_pack_file,
+        verify_registry_quorum_proposal_file, verify_registry_trust_bundle,
+        verify_team_session_file, write_acceptance_pack, write_release_custody_pack,
+        write_release_evidence_pack, write_workspace_backup,
     };
 
     fn save_test_key(
@@ -8028,6 +8300,12 @@ mod tests {
             "secrets/peer.pass",
             "--cycles",
             "1",
+            "--health-file",
+            "ops/peer-worker-health.json",
+            "--audit-log",
+            "ops/peer-worker-audit.jsonl",
+            "--stale-after-seconds",
+            "120",
         ])
         .unwrap();
 
@@ -8038,15 +8316,80 @@ mod tests {
                         identity,
                         passphrase_file,
                         cycles,
+                        health_file,
+                        audit_log,
+                        stale_after_seconds,
                         ..
                     },
             } => {
                 assert_eq!(identity, Some(PathBuf::from("secrets/peer.agkey")));
                 assert_eq!(passphrase_file, Some(PathBuf::from("secrets/peer.pass")));
                 assert_eq!(cycles, Some(1));
+                assert_eq!(
+                    health_file,
+                    Some(PathBuf::from("ops/peer-worker-health.json"))
+                );
+                assert_eq!(
+                    audit_log,
+                    Some(PathBuf::from("ops/peer-worker-audit.jsonl"))
+                );
+                assert_eq!(stale_after_seconds, 120);
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn peer_queue_worker_writes_health_and_audit() {
+        let dir = tempdir().unwrap();
+        let ledger_path = dir.path().join("mission.agl");
+        let queue_path = dir.path().join("peer-sync.db");
+        let shared_key_path = dir.path().join("peer.key");
+        let health_path = dir.path().join("peer-worker-health.json");
+        let audit_path = dir.path().join("peer-worker-audit.jsonl");
+        fs::write(&shared_key_path, b"shared\n").unwrap();
+        let ledger = astragrid_core::MissionLedger::open(&ledger_path);
+        ledger
+            .append(astragrid_core::CommandRequest::new(
+                astragrid_core::Actor::new("kernel", astragrid_core::Role::System),
+                astragrid_core::Action::OpenMission,
+                "worker-ready",
+                astragrid_core::Priority::Elevated,
+                json!({"mission": "worker-ready"}),
+            ))
+            .unwrap();
+
+        let report = run_peer_queue_worker(PeerQueueWorkerRequest {
+            queue: queue_path,
+            ledger: ledger_path,
+            shared_key_file: shared_key_path,
+            identity: None,
+            passphrase_file: None,
+            limit: 5,
+            retry_delay_seconds: 1,
+            interval_seconds: 1,
+            cycles: Some(1),
+            health_file: Some(health_path.clone()),
+            audit_log: Some(audit_path.clone()),
+            stale_after_seconds: 60,
+        })
+        .unwrap();
+
+        assert!(report.healthy);
+        assert_eq!(report.status, "stopped");
+        assert_eq!(report.cycles, 1);
+        assert_eq!(report.processed_results, 0);
+
+        let health: serde_json::Value = read_json_file(&health_path).unwrap();
+        assert_eq!(health["kind"], "peer_queue_worker");
+        assert_eq!(health["status"], "stopped");
+        assert_eq!(health["queue_health_status"], "healthy");
+        assert_eq!(health["cycles"], 1);
+
+        let audit = fs::read_to_string(audit_path).unwrap();
+        assert!(audit.contains("\"event\":\"peer_worker_started\""));
+        assert!(audit.contains("\"event\":\"peer_worker_cycle\""));
+        assert!(audit.contains("\"event\":\"peer_worker_stopped\""));
     }
 
     #[test]
@@ -9868,6 +10211,15 @@ mod tests {
                     spec.identity_passphrase_file,
                     Some(PathBuf::from("secrets/peer.pass"))
                 );
+                assert_eq!(
+                    spec.health_file,
+                    Some(PathBuf::from("data/peer-worker-health.json"))
+                );
+                assert_eq!(
+                    spec.audit_log,
+                    Some(PathBuf::from("data/peer-worker-audit.jsonl"))
+                );
+                assert_eq!(spec.stale_after_seconds, 600);
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -9897,6 +10249,10 @@ mod tests {
                 assert_eq!(output_dir, PathBuf::from("ops/systemd"));
                 assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
                 assert_eq!(spec.identity, Some(PathBuf::from("secrets/peer.agkey")));
+                assert_eq!(
+                    spec.health_file,
+                    Some(PathBuf::from("data/peer-worker-health.json"))
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -9923,6 +10279,10 @@ mod tests {
                 assert_eq!(output_dir, PathBuf::from("ops/windows"));
                 assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
                 assert_eq!(spec.identity, Some(PathBuf::from("secrets/peer.agkey")));
+                assert_eq!(
+                    spec.audit_log,
+                    Some(PathBuf::from("data/peer-worker-audit.jsonl"))
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }

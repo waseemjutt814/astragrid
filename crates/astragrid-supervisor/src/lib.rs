@@ -14,6 +14,9 @@ pub struct PeerWorkerSupervisorSpec {
     pub limit: u32,
     pub retry_delay_seconds: i64,
     pub interval_seconds: u64,
+    pub health_file: Option<PathBuf>,
+    pub audit_log: Option<PathBuf>,
+    pub stale_after_seconds: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,10 +61,21 @@ impl PeerWorkerSupervisorSpec {
                 "retry_delay_seconds cannot be negative".to_owned(),
             ));
         }
+        if self.stale_after_seconds < 0 {
+            return Err(SupervisorError::InvalidValue(
+                "stale_after_seconds cannot be negative".to_owned(),
+            ));
+        }
         if self.interval_seconds == 0 {
             return Err(SupervisorError::InvalidValue(
                 "interval_seconds must be greater than zero".to_owned(),
             ));
+        }
+        if let Some(health_file) = &self.health_file {
+            validate_path("health_file", health_file)?;
+        }
+        if let Some(audit_log) = &self.audit_log {
+            validate_path("audit_log", audit_log)?;
         }
         Ok(())
     }
@@ -90,6 +104,18 @@ impl PeerWorkerSupervisorSpec {
                 identity_passphrase_file.to_string_lossy().into_owned(),
             ]);
         }
+        if let Some(health_file) = &self.health_file {
+            args.extend([
+                "--health-file".to_owned(),
+                health_file.to_string_lossy().into_owned(),
+            ]);
+        }
+        if let Some(audit_log) = &self.audit_log {
+            args.extend([
+                "--audit-log".to_owned(),
+                audit_log.to_string_lossy().into_owned(),
+            ]);
+        }
         args.extend([
             "--limit".to_owned(),
             self.limit.to_string(),
@@ -97,6 +123,8 @@ impl PeerWorkerSupervisorSpec {
             self.retry_delay_seconds.to_string(),
             "--interval-seconds".to_owned(),
             self.interval_seconds.to_string(),
+            "--stale-after-seconds".to_owned(),
+            self.stale_after_seconds.to_string(),
         ]);
         Ok(args)
     }
@@ -504,6 +532,9 @@ mod tests {
             limit: 10,
             retry_delay_seconds: 300,
             interval_seconds: 30,
+            health_file: Some(PathBuf::from("data/peer-worker-health.json")),
+            audit_log: Some(PathBuf::from("data/peer-worker-audit.jsonl")),
+            stale_after_seconds: 600,
         }
     }
 
@@ -537,6 +568,9 @@ mod tests {
         assert!(rendered.contains("[Service]"));
         assert!(rendered.contains("Restart=always"));
         assert!(rendered.contains("\"/usr/local/bin/astragrid\" \"peer-queue\" \"worker\""));
+        assert!(rendered.contains("\"--health-file\" \"data/peer-worker-health.json\""));
+        assert!(rendered.contains("\"--audit-log\" \"data/peer-worker-audit.jsonl\""));
+        assert!(rendered.contains("\"--stale-after-seconds\" \"600\""));
         assert!(rendered.contains("User=astragrid"));
     }
 
@@ -577,6 +611,8 @@ mod tests {
         assert!(rendered.contains("'D:\\astragrid\\target\\release\\astragrid.exe'"));
         assert!(rendered.contains("--identity"));
         assert!(rendered.contains("--passphrase-file"));
+        assert!(rendered.contains("--health-file"));
+        assert!(rendered.contains("--audit-log"));
         assert!(rendered.contains("Register-ScheduledTask"));
     }
 
@@ -668,6 +704,13 @@ mod tests {
         missing_identity_spec.identity_passphrase_file = Some(PathBuf::from("peer.pass"));
         assert!(matches!(
             missing_identity_spec.worker_args(),
+            Err(SupervisorError::InvalidValue(_))
+        ));
+
+        let mut invalid_stale_spec = spec();
+        invalid_stale_spec.stale_after_seconds = -1;
+        assert!(matches!(
+            invalid_stale_spec.worker_args(),
             Err(SupervisorError::InvalidValue(_))
         ));
     }

@@ -50,6 +50,9 @@ gated until those inputs exist.
 - **Federation daemon service artifacts:** `supervisor systemd-federation-daemon-kit` and
   `supervisor windows-federation-daemon-kit` render installable service contracts for the real
   daemon command with explicit health and audit outputs.
+- **Replication worker hardening:** `peer-queue worker` can emit service health JSON and JSONL
+  audit records for start, cycle, failure, and stopped states. Peer worker supervisor artifacts
+  render those health/audit paths and stale retry thresholds into the real service command.
 
 ## A-to-Z Delivery Gates
 
@@ -72,7 +75,7 @@ gated until those inputs exist.
 | O | Operator audit timeline UI | Complete for dashboard exports: the dashboard derives a real audit timeline from loaded mission events, approvals, peer sync jobs, and evidence bundles, renders severity/source/actor/subject/detail/reference, and has export coverage. Interactive drill-down remains part of the future full UI app. |
 | P | Policy rule pack system | Complete for local operation: policy packs validate schema/compatibility/rules, detached signatures bind the pack digest, registry checks verify active signer authority, and append paths can enforce a verified pack. |
 | Q | Quorum enrollment for operators | Complete for local registry changes: proposals bind authority, current registry digest, nonce, change body, and required approval count; verification requires distinct active commander signatures, rejects duplicates/revoked signers/stale registries, and apply mutates only after verification. Remote CA-backed enrollment remains gated. |
-| R | Replication daemon with service hardening | Peer queue worker and supervisor kits exist; replication daemon needs lifecycle hardening. |
+| R | Replication daemon with service hardening | Complete for local peer queue replication: `peer-queue worker` runs finite or daemon cycles, supports signed peer identities, writes optional health JSON and JSONL audit records, exposes stale retry thresholds, and supervisor kits render the health/audit contract into systemd and Windows service commands. Multi-host deployment drills remain gated. |
 | S | Secure device pairing | Complete for local signed pairing grants: pairing bundles bind device id/name, operator identity, registry digest, expiry, and signature. Network UX and revocation distribution remain future service work. |
 | T | Team roles and permissions | Complete for the team-authenticated signed append path: sessions verify registry status and policy before mutation. Broader service/API command enforcement remains gated on the long-running service boundary. |
 | U | `astragrid-ai` evidence-bound runner crate | Deterministic and structured recommendation paths exist; runner crate needs sandboxed execution and citation enforcement. |

@@ -45,7 +45,7 @@ and a CLI.
 - Hardened authenticated federation daemon with optional signed peer registry authorization, health JSON, and JSONL audit.
 - Multi-peer sync planning from a peer manifest.
 - Durable SQLite peer sync queue with retries and append-only apply.
-- Finite-cycle or daemon-mode peer queue worker.
+- Finite-cycle or daemon-mode peer queue worker with optional health JSON and JSONL audit output.
 - Offline ledger comparison, append-only delta apply, and divergence detection.
 - Encrypted artifact sealing for ledgers, exports, and reports.
 - Sealed workspace backup and restore with per-file SHA-256 validation.
@@ -78,7 +78,7 @@ and a CLI.
 - One-shot release custody pack generation for signatures, quorum, policy, manifest, and healthy doctor gate.
 - Deterministic supervisor artifact generation for peer queue workers.
 - Watchdog recovery runner for local long-running workers.
-- Peer worker service kits with generated install and uninstall wrappers.
+- Peer worker service kits with generated install and uninstall wrappers plus health/audit paths.
 - Federation daemon service kits with generated install and uninstall wrappers.
 - Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.
