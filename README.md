@@ -2,6 +2,9 @@
 
 AstraGrid is an offline-first mission control kernel for evidence-led crisis operations.
 
+If you are new to the project, start with the plain-language manual:
+`docs/what-is-astragrid.md`.
+
 The current foundation is executable: an append-only mission ledger, hash-chain verification,
 encrypted local signing identities, trusted operator registry, SQLite indexing, GeoJSON feature
 ingestion, evidence bundles, authenticated peer snapshots, offline sync planning and deterministic
