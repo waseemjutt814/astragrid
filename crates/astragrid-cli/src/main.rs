@@ -11,7 +11,8 @@ use anyhow::{Context, Result, bail};
 use astragrid_approvals::{ApprovalLog, ApprovalStatus};
 use astragrid_core::{
     Action, Actor, CommandRequest, MissionLedger, OperatorKeypair, OperatorRegistry,
-    OperatorRegistryEntry, OperatorStatus, PAYLOAD_LIMIT_BYTES, Priority, Role,
+    OperatorRegistryEntry, OperatorStatus, PAYLOAD_LIMIT_BYTES, Priority, RegistryImportStatus,
+    Role,
 };
 use astragrid_crypto::SealedArtifact;
 use astragrid_dashboard::DashboardDocument;
@@ -337,6 +338,15 @@ enum IdentityCommands {
         input: PathBuf,
         #[arg(long)]
         registry: Option<PathBuf>,
+    },
+    /// Import a verified public trust bundle into a local registry.
+    RegistryImportBundle {
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
     },
 }
 
@@ -787,6 +797,48 @@ enum OpsCommands {
         output_dir: PathBuf,
         #[arg(long, default_value = "Flood Watch Acceptance")]
         title: String,
+    },
+    /// Export release evidence checksums, doctor output, and a handoff manifest.
+    ReleaseEvidencePack {
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        provenance: PathBuf,
+        #[arg(long)]
+        signature: Vec<PathBuf>,
+        #[arg(long)]
+        quorum: PathBuf,
+        #[arg(long)]
+        policy: PathBuf,
+    },
+    /// Run finite workspace and optional release doctor cycles as a readiness gate.
+    ReadinessGate {
+        #[arg(long, default_value = "data/mission.agl")]
+        ledger: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        identity: Vec<PathBuf>,
+        #[arg(long)]
+        approvals: Option<PathBuf>,
+        #[arg(long)]
+        peer_queue: Option<PathBuf>,
+        #[arg(long)]
+        provenance: Option<PathBuf>,
+        #[arg(long)]
+        signature: Vec<PathBuf>,
+        #[arg(long)]
+        quorum: Option<PathBuf>,
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        cycles: u32,
+        #[arg(long, default_value_t = 0)]
+        interval_seconds: u64,
+        #[arg(long, default_value_t = true)]
+        fail_on_warning: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -1334,6 +1386,11 @@ fn main() -> Result<()> {
                 }
                 Ok(())
             }
+            IdentityCommands::RegistryImportBundle {
+                registry,
+                input,
+                dry_run,
+            } => print_json(&import_registry_trust_bundle(&registry, &input, dry_run)?),
         },
         Commands::Store { command } => match command {
             StoreCommands::Ingest { ledger, db } => {
@@ -1944,6 +2001,57 @@ fn main() -> Result<()> {
             OpsCommands::AcceptancePack { output_dir, title } => {
                 print_json(&write_acceptance_pack(&output_dir, &title)?)
             }
+            OpsCommands::ReleaseEvidencePack {
+                output_dir,
+                provenance,
+                signature,
+                quorum,
+                policy,
+            } => print_json(&write_release_evidence_pack(ReleaseEvidencePackRequest {
+                output_dir,
+                provenance,
+                signatures: signature,
+                quorum,
+                policy,
+            })?),
+            OpsCommands::ReadinessGate {
+                ledger,
+                db,
+                identity,
+                approvals,
+                peer_queue,
+                provenance,
+                signature,
+                quorum,
+                policy,
+                cycles,
+                interval_seconds,
+                fail_on_warning,
+                output,
+            } => {
+                let report = run_readiness_gate(ReadinessGateRequest {
+                    ledger,
+                    db,
+                    identities: identity,
+                    approvals,
+                    peer_queue,
+                    provenance,
+                    signatures: signature,
+                    quorum,
+                    policy,
+                    cycles,
+                    interval_seconds,
+                    fail_on_warning,
+                })?;
+                if let Some(output) = output {
+                    write_json_file(&output, &report)?;
+                }
+                print_json(&report)?;
+                if !report["healthy"].as_bool().unwrap_or(false) {
+                    bail!("readiness gate failed");
+                }
+                Ok(())
+            }
         },
         Commands::Doctor { command } => match command {
             DoctorCommands::Workspace {
@@ -2381,6 +2489,29 @@ struct ReleaseCustodyPackRequest {
     passphrase_os_keys: Vec<PathBuf>,
     threshold: usize,
     require_clean_git: bool,
+}
+
+struct ReleaseEvidencePackRequest {
+    output_dir: PathBuf,
+    provenance: PathBuf,
+    signatures: Vec<PathBuf>,
+    quorum: PathBuf,
+    policy: PathBuf,
+}
+
+struct ReadinessGateRequest {
+    ledger: PathBuf,
+    db: Option<PathBuf>,
+    identities: Vec<PathBuf>,
+    approvals: Option<PathBuf>,
+    peer_queue: Option<PathBuf>,
+    provenance: Option<PathBuf>,
+    signatures: Vec<PathBuf>,
+    quorum: Option<PathBuf>,
+    policy: Option<PathBuf>,
+    cycles: u32,
+    interval_seconds: u64,
+    fail_on_warning: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2899,6 +3030,55 @@ fn verify_registry_trust_bundle(
     }))
 }
 
+fn import_registry_trust_bundle(
+    registry_path: &PathBuf,
+    bundle_path: &PathBuf,
+    dry_run: bool,
+) -> Result<Value> {
+    let bundle: TrustedRegistryBundle = read_json_file(bundle_path)?;
+    let report = verify_registry_trust_bundle(&bundle, None)?;
+    if !report["valid"].as_bool().unwrap_or(false) {
+        print_json(&report)?;
+        bail!("registry trust bundle verification failed");
+    }
+
+    let mut registry = OperatorRegistry::load_from_file(registry_path)?;
+    let mut added = 0_usize;
+    let mut updated = 0_usize;
+    let mut unchanged = 0_usize;
+    let mut imports = Vec::new();
+    for entry in bundle.operators {
+        let operator_id = entry.identity.id.clone();
+        let status = registry.import_entry(entry)?;
+        match status {
+            RegistryImportStatus::Added => added += 1,
+            RegistryImportStatus::Updated => updated += 1,
+            RegistryImportStatus::Unchanged => unchanged += 1,
+        }
+        imports.push(json!({
+            "operator_id": operator_id,
+            "status": status,
+        }));
+    }
+    let changed = added + updated;
+    if changed > 0 && !dry_run {
+        registry.save()?;
+    }
+
+    Ok(json!({
+        "registry": registry_path,
+        "bundle": bundle_path,
+        "dry_run": dry_run,
+        "authority": registry.authority(),
+        "added": added,
+        "updated": updated,
+        "unchanged": unchanged,
+        "changed": changed,
+        "saved": changed > 0 && !dry_run,
+        "imports": imports,
+    }))
+}
+
 fn check_value(name: &str, pass: bool, detail: Value) -> Value {
     json!({
         "name": name,
@@ -3052,6 +3232,183 @@ fn write_release_custody_pack(request: ReleaseCustodyPackRequest) -> Result<Valu
         "threshold": request.threshold,
         "doctor_status": doctor_report.status,
     }))
+}
+
+fn write_release_evidence_pack(request: ReleaseEvidencePackRequest) -> Result<Value> {
+    if request.signatures.is_empty() {
+        bail!("at least one --signature is required for a release evidence pack");
+    }
+    fs::create_dir_all(&request.output_dir)
+        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
+
+    let doctor_report = run_release_doctor(ReleaseDoctorInput {
+        provenance: request.provenance.clone(),
+        signatures: request.signatures.clone(),
+        quorum: Some(request.quorum.clone()),
+        policy: Some(request.policy.clone()),
+    });
+    if doctor_report.failures > 0 || doctor_report.warnings > 0 {
+        print_json(&doctor_report)?;
+        bail!("release evidence pack requires a healthy release doctor");
+    }
+
+    let doctor_path = request.output_dir.join("doctor-release.json");
+    write_json_file(&doctor_path, &doctor_report)?;
+
+    let package = PackageProvenance::load(&request.provenance)?;
+    let provenance_dir = request
+        .provenance
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let mut evidence_files = Vec::new();
+    evidence_files.push(("provenance".to_owned(), request.provenance.clone()));
+    for (index, signature) in request.signatures.iter().enumerate() {
+        evidence_files.push((format!("signature-{}", index + 1), signature.clone()));
+    }
+    evidence_files.push(("quorum".to_owned(), request.quorum.clone()));
+    evidence_files.push(("policy".to_owned(), request.policy.clone()));
+    evidence_files.push(("doctor-release".to_owned(), doctor_path.clone()));
+    if let Some(artifact) = &package.artifact {
+        evidence_files.push((
+            "artifact".to_owned(),
+            resolve_from_base(provenance_dir, &artifact.path),
+        ));
+    }
+    if let Some(binary) = &package.binary {
+        evidence_files.push((
+            "binary".to_owned(),
+            resolve_from_base(provenance_dir, &binary.path),
+        ));
+    }
+    let custody_manifest = request.provenance.with_file_name(format!(
+        "{}.custody-manifest.json",
+        provenance_stem(&request.provenance)
+    ));
+    if custody_manifest.exists() {
+        evidence_files.push(("custody-manifest".to_owned(), custody_manifest));
+    }
+
+    let mut checksum_lines = Vec::new();
+    let mut files = Vec::new();
+    for (name, path) in evidence_files {
+        if !path.exists() {
+            bail!("release evidence file does not exist: {}", path.display());
+        }
+        let sha256 = sha256_file_hex(&path)?;
+        let label = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| path.display().to_string());
+        checksum_lines.push(format!("{sha256}  {label}"));
+        files.push(json!({
+            "name": name,
+            "path": label,
+            "sha256": sha256,
+        }));
+    }
+    checksum_lines.sort();
+    let checksums_path = request.output_dir.join("checksums.sha256");
+    write_text_file(&checksums_path, &format!("{}\n", checksum_lines.join("\n")))?;
+
+    let manifest = json!({
+        "schema": 1,
+        "generated_at": OffsetDateTime::now_utc().to_string(),
+        "package": package.package,
+        "version": package.version,
+        "target": package.target,
+        "doctor_status": doctor_report.status,
+        "checksums": "checksums.sha256",
+        "files": files,
+    });
+    let manifest_path = request.output_dir.join("release-evidence-manifest.json");
+    write_json_file(&manifest_path, &manifest)?;
+
+    Ok(json!({
+        "output_dir": request.output_dir,
+        "manifest": manifest_path,
+        "checksums": checksums_path,
+        "doctor_status": doctor_report.status,
+        "files": manifest["files"].as_array().map_or(0, Vec::len),
+    }))
+}
+
+fn run_readiness_gate(request: ReadinessGateRequest) -> Result<Value> {
+    if request.cycles == 0 {
+        bail!("--cycles must be at least 1");
+    }
+    if request.provenance.is_none()
+        && (!request.signatures.is_empty() || request.quorum.is_some() || request.policy.is_some())
+    {
+        bail!("release readiness inputs require --provenance");
+    }
+
+    let mut cycles = Vec::new();
+    let mut total_warnings = 0_usize;
+    let mut total_failures = 0_usize;
+    for cycle in 1..=request.cycles {
+        let workspace = run_doctor(DoctorInput {
+            ledger: request.ledger.clone(),
+            db: request.db.clone(),
+            identities: request.identities.clone(),
+            approvals: request.approvals.clone(),
+            peer_queue: request.peer_queue.clone(),
+        });
+        let release = request.provenance.as_ref().map(|provenance| {
+            run_release_doctor(ReleaseDoctorInput {
+                provenance: provenance.clone(),
+                signatures: request.signatures.clone(),
+                quorum: request.quorum.clone(),
+                policy: request.policy.clone(),
+            })
+        });
+
+        let warnings = workspace.warnings + release.as_ref().map_or(0, |report| report.warnings);
+        let failures = workspace.failures + release.as_ref().map_or(0, |report| report.failures);
+        let healthy = failures == 0 && (!request.fail_on_warning || warnings == 0);
+        total_warnings += warnings;
+        total_failures += failures;
+        cycles.push(json!({
+            "cycle": cycle,
+            "healthy": healthy,
+            "warnings": warnings,
+            "failures": failures,
+            "workspace": workspace,
+            "release": release,
+        }));
+
+        if cycle < request.cycles && request.interval_seconds > 0 {
+            std::thread::sleep(StdDuration::from_secs(request.interval_seconds));
+        }
+    }
+
+    let healthy = cycles
+        .iter()
+        .all(|cycle| cycle["healthy"].as_bool().unwrap_or(false));
+    let status = if healthy {
+        "healthy"
+    } else if total_failures > 0 || request.fail_on_warning {
+        "failed"
+    } else {
+        "warning"
+    };
+    Ok(json!({
+        "healthy": healthy,
+        "status": status,
+        "cycles": request.cycles,
+        "fail_on_warning": request.fail_on_warning,
+        "total_warnings": total_warnings,
+        "total_failures": total_failures,
+        "reports": cycles,
+    }))
+}
+
+fn resolve_from_base(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
 }
 
 fn provenance_stem(path: &Path) -> String {
@@ -3317,11 +3674,13 @@ mod tests {
 
     use super::{
         Cli, Commands, DashboardCommands, DoctorCommands, GeoCommands, IdentityCommands,
-        OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands, RecommendCommands,
-        ReleaseCustodyPackRequest, acceptance_scenario, build_registry_trust_bundle,
-        default_signature_output_path, export_ops_bundle, http_request_path, http_response,
-        inject_meta_refresh, read_payload, render_acceptance_script, sha256_file_hex,
-        verify_registry_trust_bundle, write_acceptance_pack, write_release_custody_pack,
+        OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands, ReadinessGateRequest,
+        RecommendCommands, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
+        acceptance_scenario, build_registry_trust_bundle, default_signature_output_path,
+        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
+        inject_meta_refresh, read_payload, render_acceptance_script, run_readiness_gate,
+        sha256_file_hex, verify_registry_trust_bundle, write_acceptance_pack,
+        write_release_custody_pack, write_release_evidence_pack,
     };
 
     #[test]
@@ -3591,6 +3950,35 @@ mod tests {
     }
 
     #[test]
+    fn imports_registry_trust_bundle_into_local_registry() {
+        use astragrid_core::{OperatorKeypair, OperatorRegistry, Role};
+
+        let dir = tempdir().unwrap();
+        let remote_registry_path = dir.path().join("remote.agregistry");
+        let local_registry_path = dir.path().join("local.agregistry");
+        let bundle_path = dir.path().join("trust-bundle.json");
+        let keypair = OperatorKeypair::generate("lead", Role::Operator);
+        let mut remote = OperatorRegistry::new("remote-ca");
+        remote
+            .enroll(keypair.identity().clone(), "remote-ca")
+            .unwrap();
+        remote.save_to_file(&remote_registry_path).unwrap();
+        let mut local = OperatorRegistry::new("local-ca");
+        local.save_to_file(&local_registry_path).unwrap();
+
+        let bundle = build_registry_trust_bundle(&remote_registry_path).unwrap();
+        fs::write(&bundle_path, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+
+        let report = import_registry_trust_bundle(&local_registry_path, &bundle_path, false)
+            .expect("import bundle");
+        let loaded = OperatorRegistry::load_from_file(&local_registry_path).unwrap();
+
+        assert_eq!(report["added"], 1);
+        assert!(report["saved"].as_bool().unwrap());
+        assert!(loaded.get(&keypair.identity().id).is_some());
+    }
+
+    #[test]
     fn parses_dashboard_export_with_peer_queue_command() {
         let cli = Cli::try_parse_from([
             "astragrid",
@@ -3736,6 +4124,86 @@ mod tests {
             } => {
                 assert_eq!(output_dir, PathBuf::from("ops/acceptance"));
                 assert_eq!(title, "Acceptance");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_ops_release_evidence_pack_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "ops",
+            "release-evidence-pack",
+            "--output-dir",
+            "ops/release-evidence",
+            "--provenance",
+            "dist/package.provenance.json",
+            "--signature",
+            "dist/package.provenance.sig.json",
+            "--quorum",
+            "dist/package.provenance.quorum.json",
+            "--policy",
+            "dist/package.release-policy.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Ops {
+                command:
+                    OpsCommands::ReleaseEvidencePack {
+                        output_dir,
+                        provenance,
+                        signature,
+                        quorum,
+                        policy,
+                    },
+            } => {
+                assert_eq!(output_dir, PathBuf::from("ops/release-evidence"));
+                assert_eq!(provenance, PathBuf::from("dist/package.provenance.json"));
+                assert_eq!(
+                    signature,
+                    vec![PathBuf::from("dist/package.provenance.sig.json")]
+                );
+                assert_eq!(quorum, PathBuf::from("dist/package.provenance.quorum.json"));
+                assert_eq!(policy, PathBuf::from("dist/package.release-policy.json"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_ops_readiness_gate_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "ops",
+            "readiness-gate",
+            "--ledger",
+            "data/mission.agl",
+            "--cycles",
+            "2",
+            "--interval-seconds",
+            "0",
+            "--output",
+            "ops/readiness.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Ops {
+                command:
+                    OpsCommands::ReadinessGate {
+                        ledger,
+                        cycles,
+                        interval_seconds,
+                        output,
+                        ..
+                    },
+            } => {
+                assert_eq!(ledger, PathBuf::from("data/mission.agl"));
+                assert_eq!(cycles, 2);
+                assert_eq!(interval_seconds, 0);
+                assert_eq!(output, Some(PathBuf::from("ops/readiness.json")));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -4053,6 +4521,120 @@ mod tests {
                 .join("artifact.provenance.custody-manifest.json")
                 .exists()
         );
+    }
+
+    #[test]
+    fn writes_release_evidence_pack_from_custody_files() {
+        let dir = tempdir().unwrap();
+        let (provenance, signature, quorum, policy) = write_test_custody_files(dir.path());
+        let evidence_dir = dir.path().join("release-evidence");
+
+        let result = write_release_evidence_pack(ReleaseEvidencePackRequest {
+            output_dir: evidence_dir.clone(),
+            provenance,
+            signatures: vec![signature],
+            quorum,
+            policy,
+        })
+        .unwrap();
+
+        assert_eq!(result["doctor_status"], "healthy");
+        assert!(evidence_dir.join("doctor-release.json").exists());
+        assert!(evidence_dir.join("checksums.sha256").exists());
+        assert!(evidence_dir.join("release-evidence-manifest.json").exists());
+    }
+
+    #[test]
+    fn runs_readiness_gate_for_workspace() {
+        use astragrid_core::{Action, Actor, CommandRequest, MissionLedger, Priority, Role};
+
+        let dir = tempdir().unwrap();
+        let ledger_path = dir.path().join("mission.agl");
+        let ledger = MissionLedger::open(&ledger_path);
+        ledger
+            .append(CommandRequest::new(
+                Actor::new("kernel", Role::System),
+                Action::OpenMission,
+                "mission-alpha",
+                Priority::Elevated,
+                json!({"mission": "mission-alpha"}),
+            ))
+            .unwrap();
+
+        let report = run_readiness_gate(ReadinessGateRequest {
+            ledger: ledger_path,
+            db: None,
+            identities: Vec::new(),
+            approvals: None,
+            peer_queue: None,
+            provenance: None,
+            signatures: Vec::new(),
+            quorum: None,
+            policy: None,
+            cycles: 1,
+            interval_seconds: 0,
+            fail_on_warning: true,
+        })
+        .unwrap();
+
+        assert!(report["healthy"].as_bool().unwrap());
+        assert_eq!(report["status"], "healthy");
+    }
+
+    fn write_test_custody_files(dir: &std::path::Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        use astragrid_core::{OperatorKeypair, Role};
+        use astragrid_provenance::{PackageProvenance, ProvenanceFile};
+
+        let artifact = dir.join("artifact.zip");
+        let binary = dir.join("astragrid.exe");
+        fs::write(&artifact, b"release artifact").unwrap();
+        fs::write(&binary, b"release binary").unwrap();
+        let provenance = dir.join("artifact.provenance.json");
+        let provenance_doc = PackageProvenance {
+            schema: 1,
+            package: "astragrid".to_owned(),
+            version: "0.1.0".to_owned(),
+            target: "windows-x64".to_owned(),
+            generated_at: "2026-05-07T00:00:00Z".to_owned(),
+            artifact: Some(ProvenanceFile {
+                path: PathBuf::from("artifact.zip"),
+                sha256: sha256_file_hex(&artifact).unwrap(),
+            }),
+            binary: Some(ProvenanceFile {
+                path: PathBuf::from("astragrid.exe"),
+                sha256: sha256_file_hex(&binary).unwrap(),
+            }),
+            included_files: Vec::new(),
+            toolchain: json!({}),
+            git: json!({"dirty": false}),
+        };
+        fs::write(
+            &provenance,
+            serde_json::to_vec_pretty(&provenance_doc).unwrap(),
+        )
+        .unwrap();
+        let identity = dir.join("release.agkey");
+        OperatorKeypair::generate("release", Role::Operator)
+            .save_to_file(&identity)
+            .unwrap();
+
+        write_release_custody_pack(ReleaseCustodyPackRequest {
+            provenance: provenance.clone(),
+            output_dir: dir.to_path_buf(),
+            identities: vec![identity],
+            passphrase_files: Vec::new(),
+            passphrase_os_keys: Vec::new(),
+            threshold: 1,
+            require_clean_git: true,
+        })
+        .unwrap();
+
+        (
+            provenance,
+            dir.join("artifact.provenance.sig.json"),
+            dir.join("artifact.provenance.quorum.json"),
+            dir.join("artifact.provenance.release-policy.json"),
+        )
     }
 
     #[test]

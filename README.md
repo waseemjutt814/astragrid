@@ -21,6 +21,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Operator key audit for encryption state and local permission signals.
 - Trusted operator registry with enrollment and revocation checks.
 - Public registry trust bundle export and verification for multi-host handoff.
+- Verified registry trust bundle import with conflict checks and revocation-dominant merge behavior.
 - SQLite mission index with idempotent verified-ledger ingest, query, import, and export.
 - Materialized mission state summaries derived from verified ledger events.
 - GeoJSON feature ingestion with bounding boxes and content digests.
@@ -48,6 +49,8 @@ evidence-to-command workflow drafting, and a CLI.
 - Release doctor for package provenance, detached signature, and quorum readiness checks.
 - Release custody policy verification for required signer ids, allowed signer sets, clean Git state, and promotion thresholds.
 - Operator handoff bundle export with dashboard, state, doctor reports, optional map console, and manifest.
+- Release evidence pack export with checksums, healthy doctor output, and handoff manifest.
+- Finite readiness gate for repeated workspace and release doctor cycles.
 - Payload size limit and deterministic payload hashing.
 - Release provenance verification with fail-closed SHA-256 checks for packaged artifacts.
 - Optional operator-signed provenance envelopes for release custody.

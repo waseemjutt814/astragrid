@@ -89,8 +89,8 @@
 - Signed provenance verification must fail closed when the provenance file hash or Ed25519
   signature does not match.
 - SQLite indexes must be derived from a verified ledger, never treated as the source of truth.
-- Local registry enrollment proves role trust only for the local authority that controls the
-  registry file; remote federation and hardware-backed trust are future work.
+- Local registry enrollment and trust-bundle import prove role trust only for participating local
+  authorities; remote certificate authorities and hardware-backed trust are separate trust roots.
 - AI outputs must attach evidence and confidence through evidence bundles; free-text
   recommendations are not enough.
 - Recommendation rule outputs must verify as evidence bundles before downstream workflow drafting.

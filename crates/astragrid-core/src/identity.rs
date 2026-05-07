@@ -449,6 +449,14 @@ pub struct OperatorRegistry {
     document: OperatorRegistryFile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryImportStatus {
+    Added,
+    Updated,
+    Unchanged,
+}
+
 impl OperatorRegistry {
     pub fn new(authority: impl Into<String>) -> Self {
         Self {
@@ -484,6 +492,37 @@ impl OperatorRegistry {
 
     pub fn get(&self, operator_id: &str) -> Option<&OperatorRegistryEntry> {
         self.document.entries.get(operator_id)
+    }
+
+    pub fn import_entry(
+        &mut self,
+        entry: OperatorRegistryEntry,
+    ) -> Result<RegistryImportStatus, RegistryError> {
+        validate_registry_entry(&entry)?;
+        match self.document.entries.get(&entry.identity.id) {
+            Some(existing) if existing.identity != entry.identity => {
+                Err(RegistryError::ImportIdentityConflict(entry.identity.id))
+            }
+            Some(existing) if existing == &entry => Ok(RegistryImportStatus::Unchanged),
+            Some(existing)
+                if existing.status == OperatorStatus::Revoked
+                    && entry.status == OperatorStatus::Active =>
+            {
+                Err(RegistryError::ImportRevocationConflict(entry.identity.id))
+            }
+            Some(_) => {
+                self.document
+                    .entries
+                    .insert(entry.identity.id.clone(), entry);
+                Ok(RegistryImportStatus::Updated)
+            }
+            None => {
+                self.document
+                    .entries
+                    .insert(entry.identity.id.clone(), entry);
+                Ok(RegistryImportStatus::Added)
+            }
+        }
     }
 
     pub fn enroll(
@@ -668,6 +707,12 @@ pub enum RegistryError {
     UnsupportedRegistrySchema(u16),
     #[error("operator {0} is already enrolled and active")]
     AlreadyEnrolled(String),
+    #[error("operator registry import has invalid entry: {0}")]
+    InvalidImportEntry(String),
+    #[error("operator {0} import conflicts with an existing identity")]
+    ImportIdentityConflict(String),
+    #[error("operator {0} import would reactivate a revoked identity")]
+    ImportRevocationConflict(String),
     #[error("operator {0} is not enrolled")]
     NotEnrolled(String),
     #[error("operator {0} is revoked")]
@@ -689,6 +734,44 @@ pub enum RegistryError {
 fn operator_id(public_key: &str) -> String {
     let hash = blake3::hash(public_key.as_bytes()).to_hex().to_string();
     format!("agop_{}", &hash[..24])
+}
+
+fn validate_registry_entry(entry: &OperatorRegistryEntry) -> Result<(), RegistryError> {
+    if entry.identity.id.trim().is_empty() {
+        return Err(RegistryError::InvalidImportEntry(
+            "operator id cannot be empty".to_owned(),
+        ));
+    }
+    if entry.identity.name.trim().is_empty() {
+        return Err(RegistryError::InvalidImportEntry(
+            "operator name cannot be empty".to_owned(),
+        ));
+    }
+    if entry.identity.public_key.trim().is_empty() {
+        return Err(RegistryError::InvalidImportEntry(
+            "operator public key cannot be empty".to_owned(),
+        ));
+    }
+    if entry.issued_by.trim().is_empty() {
+        return Err(RegistryError::InvalidImportEntry(
+            "issued_by cannot be empty".to_owned(),
+        ));
+    }
+    if entry.status == OperatorStatus::Revoked
+        && (entry.revoked_by.as_deref().unwrap_or("").trim().is_empty()
+            || entry
+                .revocation_reason
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            || entry.revoked_at.is_none())
+    {
+        return Err(RegistryError::InvalidImportEntry(
+            "revoked entries require revoked_at, revoked_by, and revocation_reason".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_label(value: &str) -> String {
@@ -1012,5 +1095,57 @@ mod tests {
             loaded.get(&keypair.identity().id).unwrap().identity,
             *keypair.identity()
         );
+    }
+
+    #[test]
+    fn registry_imports_remote_entries_and_keeps_revocation_dominant() {
+        let local_key = OperatorKeypair::generate("lead", Role::Operator);
+        let mut remote = OperatorRegistry::new("remote-ca");
+        let active = remote
+            .enroll(local_key.identity().clone(), "remote-ca")
+            .unwrap();
+        remote
+            .revoke(&local_key.identity().id, "remote-ca", "rotation")
+            .unwrap();
+        let revoked = remote.get(&local_key.identity().id).unwrap().clone();
+
+        let mut local = OperatorRegistry::new("local-ca");
+        assert_eq!(
+            local.import_entry(active).unwrap(),
+            RegistryImportStatus::Added
+        );
+        assert_eq!(
+            local.import_entry(revoked.clone()).unwrap(),
+            RegistryImportStatus::Updated
+        );
+        assert_eq!(
+            local.import_entry(revoked).unwrap(),
+            RegistryImportStatus::Unchanged
+        );
+
+        let imported = local.get(&local_key.identity().id).unwrap();
+        assert_eq!(imported.status, OperatorStatus::Revoked);
+    }
+
+    #[test]
+    fn registry_import_rejects_identity_conflicts() {
+        let first = OperatorKeypair::generate("lead", Role::Operator);
+        let second = OperatorKeypair::generate("lead", Role::Operator);
+        let mut local = OperatorRegistry::new("local-ca");
+        let mut remote = OperatorRegistry::new("remote-ca");
+        let first_entry = remote
+            .enroll(first.identity().clone(), "remote-ca")
+            .unwrap();
+        let mut second_entry = remote
+            .enroll(second.identity().clone(), "remote-ca")
+            .unwrap();
+        second_entry.identity.id = first.identity().id.clone();
+
+        local.import_entry(first_entry).unwrap();
+
+        assert!(matches!(
+            local.import_entry(second_entry),
+            Err(RegistryError::ImportIdentityConflict(_))
+        ));
     }
 }

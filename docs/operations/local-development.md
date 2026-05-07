@@ -51,6 +51,7 @@ cargo run -q -p astragrid -- identity registry-init --registry $registry --autho
 cargo run -q -p astragrid -- identity enroll --registry $registry --identity $key --passphrase-file $passphrase --issued-by local-command
 cargo run -q -p astragrid -- identity registry-bundle --registry $registry --output ".cache\trust-bundle-$id.json"
 cargo run -q -p astragrid -- identity registry-verify-bundle --input ".cache\trust-bundle-$id.json" --registry $registry
+cargo run -q -p astragrid -- identity registry-import-bundle --registry $registry --input ".cache\trust-bundle-$id.json" --dry-run
 '{ "water_level_m": 5.2 }' | Set-Content -Encoding UTF8 $payload
 cargo run -q -p astragrid -- append-signed --ledger $ledger --identity $key --passphrase-file $passphrase --registry $registry --action declare_incident --subject river-east --priority critical --payload "@$payload"
 cargo run -q -p astragrid -- verify --ledger $ledger
@@ -293,6 +294,7 @@ Start-Sleep -Seconds 2
 Invoke-WebRequest http://127.0.0.1:17880/dashboard.html | Select-Object -ExpandProperty StatusCode
 Receive-Job $server -Wait
 cargo run -q -p astragrid -- doctor workspace --ledger $ledger --db $db --identity $key --approvals $approvals --peer-queue $peerQueue
+cargo run -q -p astragrid -- ops readiness-gate --ledger $ledger --db $db --identity $key --approvals $approvals --peer-queue $peerQueue --cycles 1 --output ".cache\readiness-$id.json"
 ```
 
 ## Operator Handoff Bundle Smoke Test
@@ -337,4 +339,6 @@ cargo run -q -p astragrid -- provenance verify-signature --signature dist\astrag
 cargo run -q -p astragrid -- provenance quorum-verify --input dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
 cargo run -q -p astragrid -- provenance policy-verify --policy dist\astragrid-windows-x64-0.1.0.provenance.release-policy.json --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
 cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json --policy dist\astragrid-windows-x64-0.1.0.provenance.release-policy.json
+cargo run -q -p astragrid -- ops release-evidence-pack --output-dir dist\release-evidence --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json --policy dist\astragrid-windows-x64-0.1.0.provenance.release-policy.json
+cargo run -q -p astragrid -- ops readiness-gate --ledger data\mission.agl --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json --policy dist\astragrid-windows-x64-0.1.0.provenance.release-policy.json --cycles 1
 ```

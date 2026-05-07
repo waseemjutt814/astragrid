@@ -55,3 +55,10 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add live-refresh local map console serving without weakening offline HTML export behavior.
 - [x] Add public trusted-registry bundle export and verification for multi-host operator handoff.
 - [x] Add parser and executable tests for custody packs, live map serving, and registry trust bundles.
+
+## Next Wave: Field Readiness
+
+- [x] Add verified registry trust bundle import with identity-conflict checks and revocation-dominant merge behavior.
+- [x] Add a release evidence pack that writes checksums, doctor output, and a handoff manifest from signed custody artifacts.
+- [x] Add a finite readiness gate for repeated workspace and release doctor cycles.
+- [x] Add parser and executable tests for registry import, release evidence packs, and readiness gates.

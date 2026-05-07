@@ -13,7 +13,7 @@ pub use event::{Action, Actor, MissionEvent, Priority, Role};
 pub use identity::{
     CommandAttestation, DetachedSignature, IdentityError, OperatorIdentity,
     OperatorKeyFileSecurity, OperatorKeypair, OperatorRegistry, OperatorRegistryEntry,
-    OperatorStatus, RegistryError, SignedCommand,
+    OperatorStatus, RegistryError, RegistryImportStatus, SignedCommand,
 };
 pub use ledger::{
     AppendVerifiedReport, LedgerError, LedgerFailure, LedgerVerification, MissionLedger,

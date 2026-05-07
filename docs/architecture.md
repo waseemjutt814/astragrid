@@ -22,10 +22,13 @@ scenario file -> ledger/state/store assertions
 mission artifacts -> dashboard export
 mission artifacts -> loopback dashboard server
 trusted registry -> public trust bundle -> multi-host handoff verification
+public trust bundle -> verified registry import -> conflict-checked local trust update
 workspace artifacts -> doctor report
 verified artifacts -> ops handoff bundle
 operator pack -> executable acceptance workflow
 release provenance -> custody pack -> healthy release doctor gate
+signed custody artifacts -> release evidence pack -> checksum manifest
+workspace/release doctors -> finite readiness gate
 ```
 
 ## Mission Ledger
@@ -97,8 +100,10 @@ append if the operator is not enrolled, has been revoked, or the signed identity
 the registry entry. `identity registry-bundle` exports a public trust bundle with registry
 fingerprint, authority, active/revoked counts, and public operator records. `identity
 registry-verify-bundle` checks bundle structure and can compare it with a registry file before a
-handoff is accepted on another host. The registry remains local trust; remote certificate
-authorities and hardware keys are separate deployment trust roots.
+handoff is accepted on another host. `identity registry-import-bundle` imports verified public
+entries into a local registry, rejects identity conflicts, and treats revocation as dominant so a
+stale active bundle cannot reactivate a locally revoked operator. The registry remains local
+trust; remote certificate authorities and hardware keys are separate deployment trust roots.
 
 ## Mission Store
 
@@ -227,6 +232,14 @@ operator without embedding local workstation paths.
 creation, registry enrollment, signed append, evidence build, workflow draft, approval append,
 store ingest, dashboard export, ops bundle, scenario run, doctor, and optional package provenance
 verification through the same CLI used by operators.
+
+`ops release-evidence-pack` writes a compact handoff folder for signed release custody artifacts.
+It requires a healthy release doctor, writes the doctor report, emits `checksums.sha256`, and
+records package metadata plus checked file digests in `release-evidence-manifest.json`.
+
+`ops readiness-gate` runs finite workspace doctor cycles and, when release inputs are supplied,
+release doctor cycles. It can fail on warnings for handoff gates or tolerate warnings for field
+observation runs while still reporting the exact warning and failure totals.
 
 ## Worker Service Kits
 
