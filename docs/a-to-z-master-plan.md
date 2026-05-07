@@ -26,22 +26,25 @@ gated until those inputs exist.
 - **Artifact retention gate:** `astragrid ops artifact-retention` reports safe cleanup candidates
   under one workspace root, keeps recent dist releases by policy, and deletes only when `--delete`
   is supplied.
+- **Ready-to-use operator core:** `setup first-run`, `doctor profile`, sealed workspace
+  backup/restore, operator key rotation proof, and encrypted ledger vault commands now have parser
+  and executable tests.
 
 ## A-to-Z Delivery Gates
 
 | ID | Capability | Honest completion gate |
 | --- | --- | --- |
 | A | Multi-user authentication | Local role model, operator registry, and approvals are present; complete auth needs a real service boundary with account sessions and revocation tests. |
-| B | Encrypted backups and restore | Sealed artifacts exist; complete backups need restore commands, backup manifests, and corruption/fail-closed tests. |
+| B | Encrypted backups and restore | Complete for local workspaces: `ops backup` seals profile, ledger, store, registry, key/passphrase files, approvals when present, peer queue when present, and reports; `ops restore` validates hashes and refuses overwrite unless requested. |
 | C | Remote certificate authority | Not started until a real CA root, enrollment policy, and rotation procedure exist. |
-| D | Encrypted ledgers at rest | Sealed artifacts exist; native ledger-at-rest encryption needs transparent open/append support and migration tests. |
+| D | Encrypted ledgers at rest | Complete for the vault runtime path: `vault init`, `vault append`, `vault verify`, and `vault tail` operate on a sealed ledger file as the primary at-rest artifact. Signed vault append remains a future hardening item. |
 | E | Automatic conflict merge for divergent ledgers | Divergence is detected; automatic merge needs deterministic conflict policy and replay proofs. |
 | F | Long-running secure network service | One-shot authenticated networking and supervised workers exist; daemon service needs hardened listener lifecycle and service tests. |
 | G | `astragrid-ui` operator console | HTML exports and loopback serving exist; full app waits for a real UI runtime without heavy placeholder dependencies. |
 | H | Hardware-backed keys | OS key sealing exists; TPM/YubiKey completion needs real hardware provider implementations and operator tests. |
 | I | Windows installer and package smoke | Current wave adds script installer, packaged installer, manifest, and smoke automation; MSI/winget/Scoop require release-channel decisions. |
 | J | Signed release notarization | Release custody signatures exist; notarization needs real code-signing/notary credentials. |
-| K | Key rotation and recovery workflows | Registry revocation exists; rotation needs staged replacement, escrow-free recovery, and tests. |
+| K | Key rotation and recovery workflows | Complete for local registry authority: `identity rotate` revokes the old operator id, creates a new encrypted key, enrolls it, saves the registry, and writes rotation proof. Quorum recovery remains gated. |
 | L | Remote update channel | Not started until signed update metadata and hosting are available. |
 | M | Multi-host federation beyond bundle import | Trust bundles and peer sync exist; federation daemon needs multi-node integration tests. |
 | N | Offline map tile packs | Map export exists; tile packs need a licensed tile source and pack manifest validation. |
@@ -55,16 +58,14 @@ gated until those inputs exist.
 | V | Visual dashboard app | Dashboard HTML exists; native/web app waits for storage budget and real runtime choice. |
 | W | Worker watchdog with live service recovery | Supervisor artifacts exist; watchdog needs process health policy and recovery tests. |
 | X | Cross-platform release matrix | CI covers Windows/Linux/macOS; release packages need platform-specific artifact creation. |
-| Y | Field deployment runbooks | Local development and security docs exist; field runbooks need environment-specific deployment drills. |
+| Y | Field deployment runbooks | Local ready-to-use runbook exists for install, first-run setup, backup, restore, rotation, vault use, update checks, and failure handling. Real site-specific drills remain gated. |
 | Z | Disk cleanup and artifact retention | Current wave adds CLI retention reporting/deletion and package smoke cleanup behavior. |
 
 ## Next No-Fake Order
 
-1. Finish script installer, package smoke, and retention cleanup as release-quality primitives.
-2. Add encrypted backup and restore because it reuses existing sealed artifact logic and can be tested
-   locally without external infrastructure.
-3. Add key rotation and operator recovery because it extends the current registry and approval model.
-4. Add ledger-at-rest encryption after backup/restore prevents data-loss regressions.
-5. Add secure device pairing and multi-user auth once long-running service boundaries are in place.
-6. Add hardware keys, remote CA, notarization, and update channels only when real credentials or real
+1. Add secure device pairing and multi-user auth once long-running service boundaries are in place.
+2. Add signed policy rule packs and quorum enrollment for sensitive operator changes.
+3. Add federation daemon service hardening and worker watchdog recovery.
+4. Add platform package expansion only when signing/notary/release-channel credentials exist.
+5. Add hardware keys, remote CA, notarization, and update channels only when real credentials or real
    hardware are available.

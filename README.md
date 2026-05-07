@@ -22,6 +22,9 @@ evidence-to-command workflow drafting, and a CLI.
 - Trusted operator registry with enrollment and revocation checks.
 - Public registry trust bundle export and verification for multi-host handoff.
 - Verified registry trust bundle import with conflict checks and revocation-dominant merge behavior.
+- First-run setup that creates a local workspace profile, encrypted operator key, registry, genesis ledger, store DB, and required folders.
+- Workspace profile doctor validation for configured local paths and artifacts.
+- Operator key rotation that revokes the old id, enrolls the new encrypted key, and writes rotation proof.
 - SQLite mission index with idempotent verified-ledger ingest, query, import, and export.
 - Materialized mission state summaries derived from verified ledger events.
 - GeoJSON feature ingestion with bounding boxes and content digests.
@@ -37,6 +40,8 @@ evidence-to-command workflow drafting, and a CLI.
 - Finite-cycle or daemon-mode peer queue worker.
 - Offline ledger comparison, append-only delta apply, and divergence detection.
 - Encrypted artifact sealing for ledgers, exports, and reports.
+- Sealed workspace backup and restore with per-file SHA-256 validation.
+- Encrypted-at-rest ledger vault commands for init, append, verify, and tail.
 - Source profiles with cache and retry metadata for remote harvesting.
 - Markdown and JSON incident report bundle export.
 - Evidence-to-command workflow drafts gated by state and policy.
@@ -65,7 +70,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Peer worker service kits with generated install and uninstall wrappers.
 - Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.
-- `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
+- `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
 - GitHub Actions CI for formatting, linting, tests, build, and docs.
 - Release packaging emits SHA-256 provenance JSON and includes Windows launch/smoke helpers.
 
@@ -124,4 +129,5 @@ AstraGrid is built around four non-negotiables:
 ## Roadmap
 
 See `docs/roadmap.md` for the completed phase checklist and `docs/a-to-z-master-plan.md` for
-the no-fake capability gates.
+the no-fake capability gates. See `docs/operations/ready-to-use-runbook.md` for the operator
+first-run, backup, restore, rotation, vault, and failure workflows.

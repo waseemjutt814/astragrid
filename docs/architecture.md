@@ -16,6 +16,10 @@ rules + sensor readings -> verified evidence bundle
 peer ledger -> authenticated snapshot -> sync comparison plan
 peer manifest -> durable sync queue -> authenticated snapshot -> append-only apply
 mission artifacts -> sealed encrypted envelope
+workspace profile -> first-run setup -> profile doctor
+workspace profile -> sealed backup -> fail-closed restore
+encrypted ledger vault -> temp runtime ledger -> append/verify/tail -> reseal
+operator registry -> key rotation -> revocation/enrollment proof
 state + evidence bundle -> workflow command draft
 workflow command draft -> approval log -> signed ledger append
 scenario file -> ledger/state/store assertions
@@ -85,6 +89,11 @@ portable secret. Provider behavior and expansion requirements are documented in
 `identity audit` reports whether a key file is encrypted, whether plaintext private key material
 is present, and whether local file permissions can be verified as private. Unix key files are
 created with owner-only mode. Windows ACL privacy is reported as not inspected rather than guessed.
+
+`identity rotate` supports planned key replacement and local recovery. It requires an existing
+registry, the old operator id, a new key path, a new passphrase file, issuer/revoker metadata, and
+a proof output path. The command creates the new encrypted key, enrolls it, revokes the old
+operator id, saves the registry, and writes a proof document with the post-rotation registry digest.
 
 Unsigned `append` still exists for bootstrap, import, and system migration work. Operator-facing
 workflows should prefer `append-signed`.
@@ -194,6 +203,18 @@ URLs. Operators can create NASA, Copernicus, or local OGC profiles with their re
 `astragrid-report` renders Markdown reports and JSON report bundles from the SQLite mission index
 and verified evidence bundles.
 
+`ops backup` builds a sealed workspace backup from a local profile. It includes the profile,
+ledger, store DB, registry, encrypted operator key, passphrase file, approvals when present, peer
+queue when present, and report files. Every entry carries a SHA-256 digest. `ops restore` decrypts
+the backup, validates every digest, rejects path traversal, and refuses to overwrite existing files
+unless `--overwrite` is supplied.
+
+The `vault` command family is the encrypted-at-rest runtime path for mission ledgers. `vault init`
+creates a sealed ledger vault, `vault append` decrypts to a short-lived temp ledger, appends through
+the same policy-checked ledger path, and reseals the vault. `vault verify` and `vault tail` read
+through the same fail-closed sealed artifact boundary, so the primary operator artifact stays
+encrypted JSON instead of plaintext JSON Lines.
+
 ## Workflow Drafts
 
 `astragrid-workflow` turns verified evidence bundles into command drafts. It checks the current
@@ -225,6 +246,11 @@ binds to a requested address, defaults to loopback, regenerates the same verifie
 each request, and injects browser refresh metadata without changing offline export behavior.
 
 ## Operator Handoff Bundle
+
+`setup first-run` creates a ready local workspace: directories, encrypted operator key, passphrase
+file, registry enrollment, genesis ledger, SQLite store, and `astragrid.profile.json`. `doctor
+profile` validates that profile and runs the workspace doctor against the configured ledger, store,
+and identity.
 
 `ops bundle` creates a handoff directory from verified local artifacts. It writes the dashboard,
 state summary, workspace doctor report, manifest, and optional map console or release doctor

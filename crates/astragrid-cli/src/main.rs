@@ -43,12 +43,16 @@ use astragrid_sync_queue::{
 };
 use astragrid_workflow::{CommandDraft, WorkflowPlanner, actor_from_parts};
 use clap::{Parser, Subcommand};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 
 const DEFAULT_OS_PASSPHRASE_PURPOSE: &str = "astragrid-operator-key-passphrase-v1";
+const WORKSPACE_PROFILE_SCHEMA: u16 = 1;
+const WORKSPACE_BACKUP_SCHEMA: u16 = 1;
+const LEDGER_VAULT_AAD: &str = "astragrid-ledger-vault-v1";
 
 #[derive(Debug, Parser)]
 #[command(name = "astragrid")]
@@ -60,7 +64,51 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+enum SetupCommands {
+    /// Create ledger, encrypted operator key, registry, store, folders, and profile.
+    FirstRun {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long, default_value = "flood-watch")]
+        mission: String,
+        #[arg(long, default_value = "lead")]
+        operator_name: String,
+        #[arg(long, default_value_t = Role::IncidentCommander)]
+        role: Role,
+        #[arg(long, default_value = "local-command")]
+        authority: String,
+        #[arg(long, default_value = "data/mission.agl")]
+        ledger: PathBuf,
+        #[arg(long, default_value = "data/mission.db")]
+        db: PathBuf,
+        #[arg(long, default_value = "data/operators/lead.agkey")]
+        identity: PathBuf,
+        #[arg(long, default_value = "data/operators/lead.pass")]
+        passphrase_file: PathBuf,
+        #[arg(long, default_value = "data/operators/operators.agregistry")]
+        registry: PathBuf,
+        #[arg(long, default_value = "data/approvals.agl")]
+        approvals: PathBuf,
+        #[arg(long, default_value = "data/peer-sync.db")]
+        peer_queue: PathBuf,
+        #[arg(long, default_value = "data/reports")]
+        reports_dir: PathBuf,
+        #[arg(long, default_value = "data/backups")]
+        backups_dir: PathBuf,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum Commands {
+    /// Create and validate a ready-to-use local workspace.
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommands,
+    },
     /// Create a new mission ledger with a system genesis event.
     Init {
         #[arg(long, default_value = "data/mission.agl")]
@@ -171,6 +219,11 @@ enum Commands {
     Seal {
         #[command(subcommand)]
         command: SealCommands,
+    },
+    /// Operate on an encrypted-at-rest mission ledger vault.
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommands,
     },
     /// Exchange verified ledgers over authenticated TCP.
     Net {
@@ -319,6 +372,29 @@ enum IdentityCommands {
         revoked_by: String,
         #[arg(long)]
         reason: String,
+    },
+    /// Revoke an old operator id, create a new encrypted key, enroll it, and write proof.
+    Rotate {
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        old_operator_id: String,
+        #[arg(long)]
+        new_identity: PathBuf,
+        #[arg(long)]
+        new_name: String,
+        #[arg(long)]
+        new_role: Role,
+        #[arg(long)]
+        new_passphrase_file: PathBuf,
+        #[arg(long)]
+        issued_by: String,
+        #[arg(long)]
+        revoked_by: String,
+        #[arg(long, default_value = "key rotation")]
+        reason: String,
+        #[arg(long)]
+        proof_output: PathBuf,
     },
     /// List trusted operator registry entries.
     RegistryList {
@@ -541,6 +617,56 @@ enum SealCommands {
         output: PathBuf,
         #[arg(long)]
         passphrase_file: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum VaultCommands {
+    /// Initialize an encrypted-at-rest ledger vault.
+    Init {
+        #[arg(long)]
+        ledger: PathBuf,
+        #[arg(long)]
+        passphrase_file: PathBuf,
+        #[arg(long)]
+        mission: String,
+        #[arg(long, default_value = "local-operator")]
+        operator: String,
+    },
+    /// Append a policy-checked event inside an encrypted ledger vault.
+    Append {
+        #[arg(long)]
+        ledger: PathBuf,
+        #[arg(long)]
+        passphrase_file: PathBuf,
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        role: Role,
+        #[arg(long)]
+        action: Action,
+        #[arg(long)]
+        subject: String,
+        #[arg(long, default_value_t = Priority::Routine)]
+        priority: Priority,
+        #[arg(long, default_value = "{}")]
+        payload: String,
+    },
+    /// Verify the encrypted ledger vault hash chain.
+    Verify {
+        #[arg(long)]
+        ledger: PathBuf,
+        #[arg(long)]
+        passphrase_file: PathBuf,
+    },
+    /// Print recent events from an encrypted ledger vault.
+    Tail {
+        #[arg(long)]
+        ledger: PathBuf,
+        #[arg(long)]
+        passphrase_file: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
 }
 
@@ -811,6 +937,26 @@ enum OpsCommands {
         #[arg(long)]
         policy: PathBuf,
     },
+    /// Seal a workspace backup from a validated local profile.
+    Backup {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        passphrase_file: PathBuf,
+    },
+    /// Restore a sealed workspace backup into a target directory.
+    Restore {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        passphrase_file: PathBuf,
+        #[arg(long, default_value_t = false)]
+        overwrite: bool,
+    },
     /// Run finite workspace and optional release doctor cycles as a readiness gate.
     ReadinessGate {
         #[arg(long, default_value = "data/mission.agl")]
@@ -859,6 +1005,11 @@ enum OpsCommands {
 
 #[derive(Debug, Subcommand)]
 enum DoctorCommands {
+    /// Validate a local workspace profile and its configured artifacts.
+    Profile {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+    },
     /// Check ledger, state, store, identities, approvals, and peer queue health.
     Workspace {
         #[arg(long, default_value = "data/mission.agl")]
@@ -1174,6 +1325,43 @@ fn main() -> Result<()> {
     };
 
     match command {
+        Commands::Setup { command } => match command {
+            SetupCommands::FirstRun {
+                root,
+                profile,
+                mission,
+                operator_name,
+                role,
+                authority,
+                ledger,
+                db,
+                identity,
+                passphrase_file,
+                registry,
+                approvals,
+                peer_queue,
+                reports_dir,
+                backups_dir,
+                force,
+            } => print_json(&run_first_run_setup(FirstRunRequest {
+                root,
+                profile,
+                mission,
+                operator_name,
+                role,
+                authority,
+                ledger,
+                db,
+                identity,
+                passphrase_file,
+                registry,
+                approvals,
+                peer_queue,
+                reports_dir,
+                backups_dir,
+                force,
+            })?),
+        },
         Commands::Init {
             ledger,
             mission,
@@ -1376,6 +1564,29 @@ fn main() -> Result<()> {
                 operator_registry.save()?;
                 print_json(&entry)
             }
+            IdentityCommands::Rotate {
+                registry,
+                old_operator_id,
+                new_identity,
+                new_name,
+                new_role,
+                new_passphrase_file,
+                issued_by,
+                revoked_by,
+                reason,
+                proof_output,
+            } => print_json(&rotate_operator_key(RotateOperatorRequest {
+                registry,
+                old_operator_id,
+                new_identity,
+                new_name,
+                new_role,
+                new_passphrase_file,
+                issued_by,
+                revoked_by,
+                reason,
+                proof_output,
+            })?),
             IdentityCommands::RegistryList { registry } => {
                 let operator_registry = OperatorRegistry::load_from_file(registry)?;
                 let entries = operator_registry.entries().collect::<Vec<_>>();
@@ -1636,6 +1847,45 @@ fn main() -> Result<()> {
                     "opened": true,
                 }))
             }
+        },
+        Commands::Vault { command } => match command {
+            VaultCommands::Init {
+                ledger,
+                passphrase_file,
+                mission,
+                operator,
+            } => print_json(&vault_init(&ledger, &passphrase_file, &mission, &operator)?),
+            VaultCommands::Append {
+                ledger,
+                passphrase_file,
+                actor,
+                role,
+                action,
+                subject,
+                priority,
+                payload,
+            } => {
+                let payload = read_payload(&payload)?;
+                print_json(&vault_append(VaultAppendRequest {
+                    ledger,
+                    passphrase_file,
+                    actor,
+                    role,
+                    action,
+                    subject,
+                    priority,
+                    payload,
+                })?)
+            }
+            VaultCommands::Verify {
+                ledger,
+                passphrase_file,
+            } => print_json(&vault_verify(&ledger, &passphrase_file)?),
+            VaultCommands::Tail {
+                ledger,
+                passphrase_file,
+                limit,
+            } => print_json(&vault_tail(&ledger, &passphrase_file, limit)?),
         },
         Commands::Net { command } => match command {
             NetCommands::ServeOnce {
@@ -2032,6 +2282,26 @@ fn main() -> Result<()> {
                 quorum,
                 policy,
             })?),
+            OpsCommands::Backup {
+                profile,
+                output,
+                passphrase_file,
+            } => print_json(&write_workspace_backup(BackupRequest {
+                profile,
+                output,
+                passphrase_file,
+            })?),
+            OpsCommands::Restore {
+                input,
+                output_dir,
+                passphrase_file,
+                overwrite,
+            } => print_json(&restore_workspace_backup(RestoreRequest {
+                input,
+                output_dir,
+                passphrase_file,
+                overwrite,
+            })?),
             OpsCommands::ReadinessGate {
                 ledger,
                 db,
@@ -2092,6 +2362,7 @@ fn main() -> Result<()> {
             }
         },
         Commands::Doctor { command } => match command {
+            DoctorCommands::Profile { profile } => print_json(&run_profile_doctor(&profile)?),
             DoctorCommands::Workspace {
                 ledger,
                 db,
@@ -2497,6 +2768,25 @@ struct OpsBundleRequest {
     release_policy: Option<PathBuf>,
 }
 
+struct FirstRunRequest {
+    root: PathBuf,
+    profile: PathBuf,
+    mission: String,
+    operator_name: String,
+    role: Role,
+    authority: String,
+    ledger: PathBuf,
+    db: PathBuf,
+    identity: PathBuf,
+    passphrase_file: PathBuf,
+    registry: PathBuf,
+    approvals: PathBuf,
+    peer_queue: PathBuf,
+    reports_dir: PathBuf,
+    backups_dir: PathBuf,
+    force: bool,
+}
+
 struct DashboardServeRequest {
     ledger: PathBuf,
     bind: String,
@@ -2552,6 +2842,43 @@ struct ReadinessGateRequest {
     fail_on_warning: bool,
 }
 
+struct BackupRequest {
+    profile: PathBuf,
+    output: PathBuf,
+    passphrase_file: PathBuf,
+}
+
+struct RestoreRequest {
+    input: PathBuf,
+    output_dir: PathBuf,
+    passphrase_file: PathBuf,
+    overwrite: bool,
+}
+
+struct RotateOperatorRequest {
+    registry: PathBuf,
+    old_operator_id: String,
+    new_identity: PathBuf,
+    new_name: String,
+    new_role: Role,
+    new_passphrase_file: PathBuf,
+    issued_by: String,
+    revoked_by: String,
+    reason: String,
+    proof_output: PathBuf,
+}
+
+struct VaultAppendRequest {
+    ledger: PathBuf,
+    passphrase_file: PathBuf,
+    actor: String,
+    role: Role,
+    action: Action,
+    subject: String,
+    priority: Priority,
+    payload: Value,
+}
+
 struct ArtifactRetentionRequest {
     root: PathBuf,
     max_cache_age_days: i64,
@@ -2569,6 +2896,52 @@ struct TrustedRegistryBundle {
     active_operators: usize,
     revoked_operators: usize,
     operators: Vec<OperatorRegistryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct WorkspaceProfile {
+    schema: u16,
+    mission: String,
+    created_at: String,
+    root: PathBuf,
+    ledger: PathBuf,
+    db: PathBuf,
+    registry: PathBuf,
+    primary_identity: PathBuf,
+    primary_passphrase_file: PathBuf,
+    approvals: PathBuf,
+    peer_queue: PathBuf,
+    reports_dir: PathBuf,
+    backups_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct WorkspaceBackup {
+    schema: u16,
+    created_at: String,
+    profile_sha256: String,
+    files: Vec<BackupEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct BackupEntry {
+    path: String,
+    kind: String,
+    sha256: String,
+    bytes_hex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct KeyRotationProof {
+    schema: u16,
+    rotated_at: String,
+    old_operator_id: String,
+    new_operator_id: String,
+    reason: String,
+    registry: PathBuf,
+    registry_sha256: String,
+    revoked: OperatorRegistryEntry,
+    enrolled: OperatorRegistryEntry,
 }
 
 fn serve_dashboard(request: DashboardServeRequest) -> Result<Value> {
@@ -2825,6 +3198,493 @@ fn export_ops_bundle(request: OpsBundleRequest) -> Result<Value> {
     }))
 }
 
+fn run_first_run_setup(request: FirstRunRequest) -> Result<Value> {
+    let root = ensure_workspace_root(&request.root)?;
+    let profile_path = resolve_workspace_path(&root, &request.profile);
+    let ledger_path = resolve_workspace_path(&root, &request.ledger);
+    let db_path = resolve_workspace_path(&root, &request.db);
+    let identity_path = resolve_workspace_path(&root, &request.identity);
+    let passphrase_path = resolve_workspace_path(&root, &request.passphrase_file);
+    let registry_path = resolve_workspace_path(&root, &request.registry);
+    let approvals_path = resolve_workspace_path(&root, &request.approvals);
+    let peer_queue_path = resolve_workspace_path(&root, &request.peer_queue);
+    let reports_dir = resolve_workspace_path(&root, &request.reports_dir);
+    let backups_dir = resolve_workspace_path(&root, &request.backups_dir);
+
+    if profile_path.exists() && !request.force {
+        bail!(
+            "workspace profile already exists: {}",
+            profile_path.display()
+        );
+    }
+    for dir in [
+        ledger_path.parent(),
+        db_path.parent(),
+        identity_path.parent(),
+        passphrase_path.parent(),
+        registry_path.parent(),
+        Some(reports_dir.as_path()),
+        Some(backups_dir.as_path()),
+        approvals_path.parent(),
+        peer_queue_path.parent(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        fs::create_dir_all(dir)?;
+    }
+
+    let (passphrase, passphrase_created) = ensure_passphrase_file(&passphrase_path)?;
+
+    let mut created = Vec::new();
+    if !identity_path.exists() || request.force {
+        if identity_path.exists() {
+            fs::remove_file(&identity_path)?;
+        }
+        let keypair = OperatorKeypair::generate(&request.operator_name, request.role);
+        keypair.save_encrypted_to_file(&identity_path, &passphrase)?;
+        created.push("identity");
+    }
+
+    if !registry_path.exists() || request.force {
+        if registry_path.exists() {
+            fs::remove_file(&registry_path)?;
+        }
+        let keypair =
+            OperatorKeypair::load_from_file_with_passphrase(&identity_path, Some(&passphrase))?;
+        let mut registry = OperatorRegistry::new(request.authority.clone());
+        registry.enroll(keypair.identity().clone(), request.authority.clone())?;
+        registry.save_to_file(&registry_path)?;
+        created.push("registry");
+    }
+
+    if !ledger_path.exists() || request.force {
+        if ledger_path.exists() {
+            fs::remove_file(&ledger_path)?;
+        }
+        let ledger = MissionLedger::open(&ledger_path);
+        ledger.append(CommandRequest::new(
+            Actor::new(&request.operator_name, Role::System),
+            Action::OpenMission,
+            request.mission.clone(),
+            Priority::Elevated,
+            json!({
+                "mission": request.mission,
+                "kernel": "astragrid-core",
+                "schema": 1,
+                "first_run": true,
+            }),
+        ))?;
+        created.push("ledger");
+    }
+
+    let ledger = MissionLedger::open(&ledger_path);
+    let mut store = MissionStore::open(&db_path)?;
+    store.ingest_ledger(&ledger)?;
+
+    let profile = WorkspaceProfile {
+        schema: WORKSPACE_PROFILE_SCHEMA,
+        mission: request.mission,
+        created_at: OffsetDateTime::now_utc().to_string(),
+        root: PathBuf::from("."),
+        ledger: request.ledger,
+        db: request.db,
+        registry: request.registry,
+        primary_identity: request.identity,
+        primary_passphrase_file: request.passphrase_file,
+        approvals: request.approvals,
+        peer_queue: request.peer_queue,
+        reports_dir: request.reports_dir,
+        backups_dir: request.backups_dir,
+    };
+    write_json_file(&profile_path, &profile)?;
+
+    let doctor = run_doctor(DoctorInput {
+        ledger: ledger_path.clone(),
+        db: Some(db_path.clone()),
+        identities: vec![identity_path.clone()],
+        approvals: None,
+        peer_queue: None,
+    });
+    Ok(json!({
+        "profile": profile_path,
+        "root": root,
+        "ledger": ledger_path,
+        "db": db_path,
+        "identity": identity_path,
+        "registry": registry_path,
+        "passphrase_file": passphrase_path,
+        "passphrase_created": passphrase_created,
+        "reports_dir": reports_dir,
+        "backups_dir": backups_dir,
+        "created": created,
+        "doctor_status": doctor.status,
+        "doctor": doctor,
+    }))
+}
+
+fn run_profile_doctor(profile_path: &PathBuf) -> Result<Value> {
+    let profile = load_workspace_profile(profile_path)?;
+    let root = profile_root(profile_path, &profile)?;
+    let mut checks = Vec::new();
+    let mut check_path = |name: &str, path: PathBuf, required: bool, kind: &str| {
+        let exists = path.exists();
+        let status = if exists {
+            "ok"
+        } else if required {
+            "failed"
+        } else {
+            "warning"
+        };
+        checks.push(json!({
+            "name": name,
+            "status": status,
+            "path": path,
+            "required": required,
+            "kind": kind,
+        }));
+    };
+    check_path("profile", profile_path.clone(), true, "file");
+    check_path("ledger", root.join(&profile.ledger), true, "file");
+    check_path("db", root.join(&profile.db), true, "file");
+    check_path("registry", root.join(&profile.registry), true, "file");
+    check_path(
+        "primary_identity",
+        root.join(&profile.primary_identity),
+        true,
+        "file",
+    );
+    check_path(
+        "primary_passphrase_file",
+        root.join(&profile.primary_passphrase_file),
+        true,
+        "secret",
+    );
+    check_path(
+        "reports_dir",
+        root.join(&profile.reports_dir),
+        true,
+        "directory",
+    );
+    check_path(
+        "backups_dir",
+        root.join(&profile.backups_dir),
+        true,
+        "directory",
+    );
+
+    let doctor = run_doctor(DoctorInput {
+        ledger: root.join(&profile.ledger),
+        db: Some(root.join(&profile.db)),
+        identities: vec![root.join(&profile.primary_identity)],
+        approvals: None,
+        peer_queue: None,
+    });
+    let failed_paths = checks
+        .iter()
+        .filter(|check| check["status"] == "failed")
+        .count();
+    let healthy = failed_paths == 0 && doctor.failures == 0;
+    Ok(json!({
+        "profile": profile_path,
+        "healthy": healthy,
+        "status": if healthy { "healthy" } else { "failed" },
+        "path_checks": checks,
+        "workspace_doctor": doctor,
+    }))
+}
+
+fn write_workspace_backup(request: BackupRequest) -> Result<Value> {
+    let profile = load_workspace_profile(&request.profile)?;
+    let root = profile_root(&request.profile, &profile)?;
+    let passphrase = read_passphrase_file(&request.passphrase_file)?;
+    let profile_sha256 = sha256_file_hex(&request.profile)?;
+    let mut files = Vec::new();
+    collect_backup_file(&root, &request.profile, "profile", &mut files)?;
+    collect_backup_file(&root, &root.join(&profile.ledger), "ledger", &mut files)?;
+    collect_backup_file(&root, &root.join(&profile.db), "store", &mut files)?;
+    collect_backup_file(&root, &root.join(&profile.registry), "registry", &mut files)?;
+    collect_backup_file(
+        &root,
+        &root.join(&profile.primary_identity),
+        "operator_key",
+        &mut files,
+    )?;
+    collect_backup_file(
+        &root,
+        &root.join(&profile.primary_passphrase_file),
+        "operator_passphrase",
+        &mut files,
+    )?;
+    collect_optional_backup_file(
+        &root,
+        &root.join(&profile.approvals),
+        "approvals",
+        &mut files,
+    )?;
+    collect_optional_backup_file(
+        &root,
+        &root.join(&profile.peer_queue),
+        "peer_queue",
+        &mut files,
+    )?;
+    collect_backup_directory_marker(&root, &root.join(&profile.reports_dir), &mut files)?;
+    collect_backup_directory_marker(&root, &root.join(&profile.backups_dir), &mut files)?;
+    collect_backup_dir(
+        &root,
+        &root.join(&profile.reports_dir),
+        "report",
+        &mut files,
+    )?;
+
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    let backup = WorkspaceBackup {
+        schema: WORKSPACE_BACKUP_SCHEMA,
+        created_at: OffsetDateTime::now_utc().to_string(),
+        profile_sha256,
+        files,
+    };
+    let plaintext = serde_json::to_vec_pretty(&backup)?;
+    let artifact = SealedArtifact::seal(
+        "astragrid-workspace-backup-v1",
+        &plaintext,
+        &passphrase,
+        b"astragrid-workspace-backup-v1",
+    )?;
+    write_json_file(&request.output, &artifact)?;
+    Ok(json!({
+        "output": request.output,
+        "files": backup.files.len(),
+        "sealed": true,
+        "profile_sha256": backup.profile_sha256,
+    }))
+}
+
+fn restore_workspace_backup(request: RestoreRequest) -> Result<Value> {
+    let passphrase = read_passphrase_file(&request.passphrase_file)?;
+    let artifact: SealedArtifact = read_json_file(&request.input)?;
+    let plaintext = artifact.open(&passphrase)?;
+    let backup: WorkspaceBackup = serde_json::from_slice(&plaintext)?;
+    if backup.schema != WORKSPACE_BACKUP_SCHEMA {
+        bail!("unsupported workspace backup schema {}", backup.schema);
+    }
+    fs::create_dir_all(&request.output_dir)?;
+    let output_root = request.output_dir.canonicalize()?;
+    let mut restored = Vec::new();
+    for entry in backup.files {
+        let relative = safe_relative_path(&entry.path)?;
+        let output = output_root.join(&relative);
+        if entry.kind == "directory" {
+            fs::create_dir_all(&output)?;
+            restored.push(json!({
+                "path": relative,
+                "kind": entry.kind,
+                "sha256": entry.sha256,
+            }));
+            continue;
+        }
+        if output.exists() && !request.overwrite {
+            bail!("restore target already exists: {}", output.display());
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let bytes = hex::decode(&entry.bytes_hex)?;
+        let actual_sha256 = sha256_bytes_hex(&bytes);
+        if actual_sha256 != entry.sha256 {
+            bail!("backup entry hash mismatch for {}", entry.path);
+        }
+        fs::write(&output, bytes)?;
+        restored.push(json!({
+            "path": relative,
+            "kind": entry.kind,
+            "sha256": entry.sha256,
+        }));
+    }
+    Ok(json!({
+        "input": request.input,
+        "output_dir": output_root,
+        "restored_files": restored.len(),
+        "files": restored,
+    }))
+}
+
+fn rotate_operator_key(request: RotateOperatorRequest) -> Result<Value> {
+    if request.new_identity.exists() {
+        bail!(
+            "new identity already exists: {}",
+            request.new_identity.display()
+        );
+    }
+    let passphrase = ensure_passphrase_file(&request.new_passphrase_file)?.0;
+    let mut registry = OperatorRegistry::load_from_file(&request.registry)?;
+    let old_entry = registry
+        .get(&request.old_operator_id)
+        .cloned()
+        .with_context(|| format!("old operator is not enrolled: {}", request.old_operator_id))?;
+    if old_entry.status == OperatorStatus::Revoked {
+        bail!(
+            "old operator is already revoked: {}",
+            request.old_operator_id
+        );
+    }
+
+    let new_keypair = OperatorKeypair::generate(&request.new_name, request.new_role);
+    new_keypair.save_encrypted_to_file(&request.new_identity, &passphrase)?;
+    let enrolled = registry.enroll(new_keypair.identity().clone(), request.issued_by)?;
+    let revoked = registry.revoke(
+        &request.old_operator_id,
+        request.revoked_by,
+        &request.reason,
+    )?;
+    registry.save()?;
+
+    let registry_sha256 = sha256_file_hex(&request.registry)?;
+    let proof = KeyRotationProof {
+        schema: 1,
+        rotated_at: OffsetDateTime::now_utc().to_string(),
+        old_operator_id: request.old_operator_id.clone(),
+        new_operator_id: enrolled.identity.id.clone(),
+        reason: request.reason,
+        registry: request.registry.clone(),
+        registry_sha256,
+        revoked,
+        enrolled,
+    };
+    write_json_file(&request.proof_output, &proof)?;
+    Ok(json!({
+        "registry": request.registry,
+        "new_identity": request.new_identity,
+        "proof": request.proof_output,
+        "old_operator_id": request.old_operator_id,
+        "new_operator_id": proof.new_operator_id,
+        "registry_sha256": proof.registry_sha256,
+    }))
+}
+
+fn vault_init(
+    vault_path: &PathBuf,
+    passphrase_file: &PathBuf,
+    mission: &str,
+    operator: &str,
+) -> Result<Value> {
+    if vault_path.exists() {
+        bail!(
+            "encrypted ledger vault already exists: {}",
+            vault_path.display()
+        );
+    }
+    let passphrase = read_passphrase_file(passphrase_file)?;
+    let temp_path = temporary_ledger_path(vault_path)?;
+    let ledger = MissionLedger::open(&temp_path);
+    ledger.append(CommandRequest::new(
+        Actor::new(operator, Role::System),
+        Action::OpenMission,
+        mission,
+        Priority::Elevated,
+        json!({
+            "mission": mission,
+            "kernel": "astragrid-core",
+            "schema": 1,
+            "encrypted_at_rest": true,
+        }),
+    ))?;
+    let verification = ledger.verify()?;
+    seal_vault_from_temp(vault_path, &temp_path, &passphrase)?;
+    let _ = fs::remove_file(&temp_path);
+    Ok(json!({
+        "ledger": vault_path,
+        "encrypted_at_rest": true,
+        "events": verification.events,
+        "last_hash": verification.last_hash,
+    }))
+}
+
+fn vault_append(request: VaultAppendRequest) -> Result<Value> {
+    let passphrase = read_passphrase_file(&request.passphrase_file)?;
+    let temp_path = open_vault_to_temp(&request.ledger, &passphrase)?;
+    let ledger = MissionLedger::open(&temp_path);
+    let event = ledger.append(CommandRequest::new(
+        Actor::new(request.actor, request.role),
+        request.action,
+        request.subject,
+        request.priority,
+        request.payload,
+    ))?;
+    seal_vault_from_temp(&request.ledger, &temp_path, &passphrase)?;
+    let _ = fs::remove_file(&temp_path);
+    Ok(json!({
+        "ledger": request.ledger,
+        "event": event,
+        "encrypted_at_rest": true,
+    }))
+}
+
+fn vault_verify(vault_path: &PathBuf, passphrase_file: &PathBuf) -> Result<Value> {
+    let passphrase = read_passphrase_file(passphrase_file)?;
+    let temp_path = open_vault_to_temp(vault_path, &passphrase)?;
+    let ledger = MissionLedger::open(&temp_path);
+    let verification = ledger.verify()?;
+    let _ = fs::remove_file(&temp_path);
+    Ok(json!({
+        "ledger": vault_path,
+        "encrypted_at_rest": true,
+        "verification": verification,
+    }))
+}
+
+fn vault_tail(vault_path: &PathBuf, passphrase_file: &PathBuf, limit: usize) -> Result<Value> {
+    let passphrase = read_passphrase_file(passphrase_file)?;
+    let temp_path = open_vault_to_temp(vault_path, &passphrase)?;
+    let ledger = MissionLedger::open(&temp_path);
+    let events = ledger.load_events()?;
+    let start = events.len().saturating_sub(limit);
+    let result = json!({
+        "ledger": vault_path,
+        "encrypted_at_rest": true,
+        "events": &events[start..],
+    });
+    let _ = fs::remove_file(&temp_path);
+    Ok(result)
+}
+
+fn open_vault_to_temp(vault_path: &PathBuf, passphrase: &[u8]) -> Result<PathBuf> {
+    let artifact: SealedArtifact = read_json_file(vault_path)?;
+    let plaintext = artifact.open(passphrase)?;
+    let temp_path = temporary_ledger_path(vault_path)?;
+    write_bytes_file(&temp_path, &plaintext)?;
+    Ok(temp_path)
+}
+
+fn seal_vault_from_temp(
+    vault_path: &PathBuf,
+    temp_path: &PathBuf,
+    passphrase: &[u8],
+) -> Result<()> {
+    let bytes = fs::read(temp_path)?;
+    let artifact = SealedArtifact::seal(
+        "astragrid-ledger-vault-v1",
+        &bytes,
+        passphrase,
+        LEDGER_VAULT_AAD.as_bytes(),
+    )?;
+    write_json_file(vault_path, &artifact)
+}
+
+fn temporary_ledger_path(vault_path: &Path) -> Result<PathBuf> {
+    let mut nonce = [0_u8; 8];
+    OsRng.fill_bytes(&mut nonce);
+    let name = vault_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("ledger");
+    Ok(std::env::temp_dir().join(format!(
+        "astragrid-vault-{}-{}.agl",
+        sanitize_file_component(name),
+        hex::encode(nonce)
+    )))
+}
+
 fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
@@ -2852,6 +3712,10 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "dashboard export",
             "ops bundle",
             "workspace doctor",
+            "workspace profile",
+            "encrypted backup restore",
+            "key rotation",
+            "encrypted ledger vault",
             "package provenance"
         ]
     });
@@ -2937,11 +3801,35 @@ try {{
     $opsBundle = Join-Path $Run 'ops-bundle'
     $scenario = Join-Path $PackRoot 'mission-scenario.json'
     $scenarioRun = Join-Path $Run 'scenario'
+    $firstRunRoot = Join-Path $Run 'first-run'
+    $firstRunProfile = Join-Path $firstRunRoot 'astragrid.profile.json'
+    $firstRunPass = Join-Path $firstRunRoot 'data\operators\lead.pass'
+    $firstRunIdentity = Join-Path $firstRunRoot 'data\operators\lead.agkey'
+    $firstRunRegistry = Join-Path $firstRunRoot 'data\operators\operators.agregistry'
+    $backup = Join-Path $Run 'workspace-backup.sealed.json'
+    $restoreRoot = Join-Path $Run 'restore'
+    $rotatedIdentity = Join-Path $firstRunRoot 'data\operators\lead-rotated.agkey'
+    $rotatedPassphrase = Join-Path $firstRunRoot 'data\operators\lead-rotated.pass'
+    $rotationProof = Join-Path $firstRunRoot 'data\operators\lead-rotation-proof.json'
+    $vault = Join-Path $Run 'mission.vault.json'
+    $vaultPayload = Join-Path $Run 'vault-payload.json'
 
     'acceptance local passphrase' | Set-Content -Encoding UTF8 $passphrase
     '{{"water_level_m":5.2}}' | Set-Content -Encoding UTF8 $payload
+    '{{"note":"vault runtime append"}}' | Set-Content -Encoding UTF8 $vaultPayload
     '[{{"id":"sensor-1","source":"river-gauge","kind":"sensor","confidence":0.94,"digest":"sensor-digest","excerpt":"water=5.2"}}]' | Set-Content -Encoding UTF8 $evidence
     '{{"type":"Feature","id":"river-east","properties":{{"risk":"flood"}},"geometry":{{"type":"Point","coordinates":[72.2,31.2]}}}}' | Set-Content -Encoding UTF8 $geo
+
+    Invoke-AstraGrid setup first-run --root $firstRunRoot --profile astragrid.profile.json --mission flood-watch --operator-name lead --role incident_commander
+    Invoke-AstraGrid doctor profile --profile $firstRunProfile
+    Invoke-AstraGrid ops backup --profile $firstRunProfile --output $backup --passphrase-file $firstRunPass
+    Invoke-AstraGrid ops restore --input $backup --output-dir $restoreRoot --passphrase-file $firstRunPass
+    Invoke-AstraGrid doctor profile --profile (Join-Path $restoreRoot 'astragrid.profile.json')
+    $oldIdentity = Invoke-AstraGridJson identity inspect --path $firstRunIdentity --passphrase-file $firstRunPass
+    Invoke-AstraGrid identity rotate --registry $firstRunRegistry --old-operator-id $oldIdentity.id --new-identity $rotatedIdentity --new-name lead-rotated --new-role incident_commander --new-passphrase-file $rotatedPassphrase --issued-by local-command --revoked-by local-command --reason 'acceptance rotation' --proof-output $rotationProof
+    Invoke-AstraGrid vault init --ledger $vault --passphrase-file $passphrase --mission flood-watch-vault
+    Invoke-AstraGrid vault append --ledger $vault --passphrase-file $passphrase --actor lead --role incident_commander --action annotate_situation --subject river-east --payload "@$vaultPayload"
+    Invoke-AstraGrid vault verify --ledger $vault --passphrase-file $passphrase
 
     Invoke-AstraGrid init --mission flood-watch --ledger $ledger
     Invoke-AstraGrid identity create --path $identity --name lead --role incident_commander --passphrase-file $passphrase
@@ -3887,6 +4775,167 @@ fn sha256_file_hex(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn ensure_workspace_root(root: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(root).with_context(|| format!("failed to create {}", root.display()))?;
+    root.canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", root.display()))
+}
+
+fn resolve_workspace_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+fn ensure_passphrase_file(path: &PathBuf) -> Result<(Vec<u8>, bool)> {
+    if path.exists() {
+        return Ok((read_passphrase_file(path)?, false));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut random = [0_u8; 32];
+    OsRng.fill_bytes(&mut random);
+    let passphrase = hex::encode(random).into_bytes();
+    write_bytes_file(path, &passphrase)?;
+    Ok((passphrase, true))
+}
+
+fn load_workspace_profile(path: &PathBuf) -> Result<WorkspaceProfile> {
+    let profile: WorkspaceProfile = read_json_file(path)?;
+    if profile.schema != WORKSPACE_PROFILE_SCHEMA {
+        bail!("unsupported workspace profile schema {}", profile.schema);
+    }
+    Ok(profile)
+}
+
+fn profile_root(profile_path: &Path, profile: &WorkspaceProfile) -> Result<PathBuf> {
+    let base = profile_path.parent().unwrap_or_else(|| Path::new("."));
+    let root = if profile.root.is_absolute() {
+        profile.root.clone()
+    } else {
+        base.join(&profile.root)
+    };
+    root.canonicalize()
+        .with_context(|| format!("workspace profile root does not exist: {}", root.display()))
+}
+
+fn collect_backup_file(
+    root: &Path,
+    path: &Path,
+    kind: &str,
+    files: &mut Vec<BackupEntry>,
+) -> Result<()> {
+    let canonical = safe_existing_workspace_path(root, path)?;
+    if !canonical.is_file() {
+        bail!("backup path is not a file: {}", canonical.display());
+    }
+    let bytes = fs::read(&canonical)?;
+    let relative = canonical
+        .strip_prefix(root)
+        .with_context(|| format!("backup path escapes root: {}", canonical.display()))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    files.push(BackupEntry {
+        path: relative,
+        kind: kind.to_owned(),
+        sha256: sha256_bytes_hex(&bytes),
+        bytes_hex: hex::encode(bytes),
+    });
+    Ok(())
+}
+
+fn collect_optional_backup_file(
+    root: &Path,
+    path: &Path,
+    kind: &str,
+    files: &mut Vec<BackupEntry>,
+) -> Result<()> {
+    if path.exists() {
+        collect_backup_file(root, path, kind, files)?;
+    }
+    Ok(())
+}
+
+fn collect_backup_directory_marker(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<BackupEntry>,
+) -> Result<()> {
+    let canonical = safe_existing_workspace_path(root, dir)?;
+    if !canonical.is_dir() {
+        bail!("backup path is not a directory: {}", canonical.display());
+    }
+    let relative = canonical
+        .strip_prefix(root)
+        .with_context(|| format!("backup path escapes root: {}", canonical.display()))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    files.push(BackupEntry {
+        path: relative,
+        kind: "directory".to_owned(),
+        sha256: sha256_bytes_hex(&[]),
+        bytes_hex: String::new(),
+    });
+    Ok(())
+}
+
+fn collect_backup_dir(
+    root: &Path,
+    dir: &Path,
+    kind: &str,
+    files: &mut Vec<BackupEntry>,
+) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let canonical = safe_existing_workspace_path(root, dir)?;
+    if !canonical.is_dir() {
+        bail!("backup path is not a directory: {}", canonical.display());
+    }
+    for entry in fs::read_dir(&canonical)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_backup_dir(root, &path, kind, files)?;
+        } else if path.is_file() {
+            collect_backup_file(root, &path, kind, files)?;
+        }
+    }
+    Ok(())
+}
+
+fn safe_existing_workspace_path(root: &Path, path: &Path) -> Result<PathBuf> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("path does not exist: {}", path.display()))?;
+    if !canonical.starts_with(root) {
+        bail!("path escapes workspace root: {}", canonical.display());
+    }
+    Ok(canonical)
+}
+
+fn safe_relative_path(value: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        bail!("backup entry path must be relative: {value}");
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("backup entry path cannot contain parent traversal: {value}");
+    }
+    Ok(path)
+}
+
 fn strip_utf8_bom(bytes: &mut Vec<u8>) {
     const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
     if bytes.starts_with(UTF8_BOM) {
@@ -3994,15 +5043,18 @@ mod tests {
     use tempfile::{NamedTempFile, tempdir};
 
     use super::{
-        ArtifactRetentionRequest, Cli, Commands, DashboardCommands, DoctorCommands, GeoCommands,
-        IdentityCommands, OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands,
-        ReadinessGateRequest, RecommendCommands, ReleaseCustodyPackRequest,
-        ReleaseEvidencePackRequest, acceptance_scenario, build_registry_trust_bundle,
-        default_signature_output_path, export_ops_bundle, http_request_path, http_response,
-        import_registry_trust_bundle, inject_meta_refresh, read_payload, render_acceptance_script,
-        render_default_launcher, run_artifact_retention, run_readiness_gate, sha256_file_hex,
-        verify_registry_trust_bundle, write_acceptance_pack, write_release_custody_pack,
-        write_release_evidence_pack,
+        ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands, DoctorCommands,
+        FirstRunRequest, GeoCommands, IdentityCommands, OpsBundleRequest, OpsCommands,
+        PeerQueueCommands, ProvenanceCommands, ReadinessGateRequest, RecommendCommands,
+        ReleaseCustodyPackRequest, ReleaseEvidencePackRequest, RestoreRequest,
+        RotateOperatorRequest, SetupCommands, VaultAppendRequest, VaultCommands, WorkspaceProfile,
+        acceptance_scenario, build_registry_trust_bundle, default_signature_output_path,
+        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
+        inject_meta_refresh, read_payload, render_acceptance_script, render_default_launcher,
+        restore_workspace_backup, rotate_operator_key, run_artifact_retention, run_first_run_setup,
+        run_profile_doctor, run_readiness_gate, sha256_file_hex, vault_append, vault_init,
+        vault_tail, vault_verify, verify_registry_trust_bundle, write_acceptance_pack,
+        write_release_custody_pack, write_release_evidence_pack, write_workspace_backup,
     };
 
     #[test]
@@ -4116,6 +5168,206 @@ mod tests {
                 assert_eq!(input, PathBuf::from("ops/trust-bundle.json"));
                 assert_eq!(registry, Some(PathBuf::from("data/operators.agregistry")));
             }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_setup_first_run_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "setup",
+            "first-run",
+            "--root",
+            "ops",
+            "--mission",
+            "field-ready",
+            "--operator-name",
+            "lead",
+            "--role",
+            "incident_commander",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Setup {
+                command:
+                    SetupCommands::FirstRun {
+                        root,
+                        mission,
+                        operator_name,
+                        role,
+                        ..
+                    },
+            } => {
+                assert_eq!(root, PathBuf::from("ops"));
+                assert_eq!(mission, "field-ready");
+                assert_eq!(operator_name, "lead");
+                assert_eq!(role, astragrid_core::Role::IncidentCommander);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_identity_rotate_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "identity",
+            "rotate",
+            "--registry",
+            "data/operators.agregistry",
+            "--old-operator-id",
+            "agop_old",
+            "--new-identity",
+            "data/operators/new.agkey",
+            "--new-name",
+            "lead-rotated",
+            "--new-role",
+            "operator",
+            "--new-passphrase-file",
+            "data/operators/new.pass",
+            "--issued-by",
+            "local-command",
+            "--revoked-by",
+            "local-command",
+            "--proof-output",
+            "data/operators/rotation-proof.json",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Identity {
+                command:
+                    IdentityCommands::Rotate {
+                        old_operator_id,
+                        new_identity,
+                        new_name,
+                        proof_output,
+                        ..
+                    },
+            } => {
+                assert_eq!(old_operator_id, "agop_old");
+                assert_eq!(new_identity, PathBuf::from("data/operators/new.agkey"));
+                assert_eq!(new_name, "lead-rotated");
+                assert_eq!(
+                    proof_output,
+                    PathBuf::from("data/operators/rotation-proof.json")
+                );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_vault_commands() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "vault",
+            "init",
+            "--ledger",
+            "data/mission.vault.json",
+            "--passphrase-file",
+            "data/vault.pass",
+            "--mission",
+            "field-ready",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Vault {
+                command:
+                    VaultCommands::Init {
+                        ledger,
+                        passphrase_file,
+                        mission,
+                        ..
+                    },
+            } => {
+                assert_eq!(ledger, PathBuf::from("data/mission.vault.json"));
+                assert_eq!(passphrase_file, PathBuf::from("data/vault.pass"));
+                assert_eq!(mission, "field-ready");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_ops_backup_restore_commands() {
+        let backup = Cli::try_parse_from([
+            "astragrid",
+            "ops",
+            "backup",
+            "--profile",
+            "astragrid.profile.json",
+            "--output",
+            "data/backups/workspace.sealed.json",
+            "--passphrase-file",
+            "data/operators/lead.pass",
+        ])
+        .unwrap();
+        match backup.command.expect("command") {
+            Commands::Ops {
+                command:
+                    OpsCommands::Backup {
+                        profile,
+                        output,
+                        passphrase_file,
+                    },
+            } => {
+                assert_eq!(profile, PathBuf::from("astragrid.profile.json"));
+                assert_eq!(output, PathBuf::from("data/backups/workspace.sealed.json"));
+                assert_eq!(passphrase_file, PathBuf::from("data/operators/lead.pass"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let restore = Cli::try_parse_from([
+            "astragrid",
+            "ops",
+            "restore",
+            "--input",
+            "data/backups/workspace.sealed.json",
+            "--output-dir",
+            "restore",
+            "--passphrase-file",
+            "backup.pass",
+            "--overwrite",
+        ])
+        .unwrap();
+        match restore.command.expect("command") {
+            Commands::Ops {
+                command:
+                    OpsCommands::Restore {
+                        input,
+                        output_dir,
+                        overwrite,
+                        ..
+                    },
+            } => {
+                assert_eq!(input, PathBuf::from("data/backups/workspace.sealed.json"));
+                assert_eq!(output_dir, PathBuf::from("restore"));
+                assert!(overwrite);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_doctor_profile_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "doctor",
+            "profile",
+            "--profile",
+            "astragrid.profile.json",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Doctor {
+                command: DoctorCommands::Profile { profile },
+            } => assert_eq!(profile, PathBuf::from("astragrid.profile.json")),
             other => panic!("unexpected command parsed: {other:?}"),
         }
     }
@@ -4952,6 +6204,164 @@ mod tests {
 
         assert!(report["healthy"].as_bool().unwrap());
         assert_eq!(report["status"], "healthy");
+    }
+
+    #[test]
+    fn first_run_setup_writes_profile_and_passes_profile_doctor() {
+        let dir = tempdir().unwrap();
+        let profile = dir.path().join("astragrid.profile.json");
+
+        let result = run_first_run_setup(FirstRunRequest {
+            root: dir.path().to_path_buf(),
+            profile: PathBuf::from("astragrid.profile.json"),
+            mission: "field-ready".to_owned(),
+            operator_name: "lead".to_owned(),
+            role: astragrid_core::Role::IncidentCommander,
+            authority: "local-command".to_owned(),
+            ledger: PathBuf::from("data/mission.agl"),
+            db: PathBuf::from("data/mission.db"),
+            identity: PathBuf::from("data/operators/lead.agkey"),
+            passphrase_file: PathBuf::from("data/operators/lead.pass"),
+            registry: PathBuf::from("data/operators/operators.agregistry"),
+            approvals: PathBuf::from("data/approvals.agl"),
+            peer_queue: PathBuf::from("data/peer-sync.db"),
+            reports_dir: PathBuf::from("data/reports"),
+            backups_dir: PathBuf::from("data/backups"),
+            force: false,
+        })
+        .unwrap();
+
+        assert_eq!(result["doctor"]["failures"], 0);
+        assert!(profile.exists());
+        let loaded: WorkspaceProfile =
+            serde_json::from_slice(&fs::read(&profile).unwrap()).unwrap();
+        assert_eq!(loaded.mission, "field-ready");
+        let doctor = run_profile_doctor(&profile).unwrap();
+        assert!(doctor["healthy"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn backup_restore_round_trips_workspace_files() {
+        let dir = tempdir().unwrap();
+        let profile = dir.path().join("astragrid.profile.json");
+        run_first_run_setup(FirstRunRequest {
+            root: dir.path().to_path_buf(),
+            profile: PathBuf::from("astragrid.profile.json"),
+            mission: "field-ready".to_owned(),
+            operator_name: "lead".to_owned(),
+            role: astragrid_core::Role::IncidentCommander,
+            authority: "local-command".to_owned(),
+            ledger: PathBuf::from("data/mission.agl"),
+            db: PathBuf::from("data/mission.db"),
+            identity: PathBuf::from("data/operators/lead.agkey"),
+            passphrase_file: PathBuf::from("data/operators/lead.pass"),
+            registry: PathBuf::from("data/operators/operators.agregistry"),
+            approvals: PathBuf::from("data/approvals.agl"),
+            peer_queue: PathBuf::from("data/peer-sync.db"),
+            reports_dir: PathBuf::from("data/reports"),
+            backups_dir: PathBuf::from("data/backups"),
+            force: false,
+        })
+        .unwrap();
+        fs::write(dir.path().join("data/reports/incident.md"), "# incident\n").unwrap();
+        let passphrase = dir.path().join("data/operators/lead.pass");
+        let backup = dir.path().join("data/backups/workspace.sealed.json");
+
+        let result = write_workspace_backup(BackupRequest {
+            profile: profile.clone(),
+            output: backup.clone(),
+            passphrase_file: passphrase.clone(),
+        })
+        .unwrap();
+        assert!(result["sealed"].as_bool().unwrap());
+
+        let restore_dir = dir.path().join("restore");
+        let restore = restore_workspace_backup(RestoreRequest {
+            input: backup,
+            output_dir: restore_dir.clone(),
+            passphrase_file: passphrase,
+            overwrite: false,
+        })
+        .unwrap();
+        assert!(restore["restored_files"].as_u64().unwrap() >= 6);
+        assert!(restore_dir.join("data/mission.agl").exists());
+        assert!(restore_dir.join("data/reports/incident.md").exists());
+    }
+
+    #[test]
+    fn rotates_operator_key_and_writes_proof() {
+        let dir = tempdir().unwrap();
+        let registry_path = dir.path().join("operators.agregistry");
+        let old_key = dir.path().join("old.agkey");
+        let old = astragrid_core::OperatorKeypair::generate(
+            "lead",
+            astragrid_core::Role::IncidentCommander,
+        );
+        old.save_encrypted_to_file(&old_key, b"old-pass").unwrap();
+        let mut registry = astragrid_core::OperatorRegistry::new("local-command");
+        registry
+            .enroll(old.identity().clone(), "local-command")
+            .unwrap();
+        registry.save_to_file(&registry_path).unwrap();
+
+        let new_key = dir.path().join("new.agkey");
+        let new_pass = dir.path().join("new.pass");
+        let proof = dir.path().join("rotation-proof.json");
+        let result = rotate_operator_key(RotateOperatorRequest {
+            registry: registry_path.clone(),
+            old_operator_id: old.identity().id.clone(),
+            new_identity: new_key.clone(),
+            new_name: "lead-rotated".to_owned(),
+            new_role: astragrid_core::Role::IncidentCommander,
+            new_passphrase_file: new_pass.clone(),
+            issued_by: "local-command".to_owned(),
+            revoked_by: "local-command".to_owned(),
+            reason: "rotation".to_owned(),
+            proof_output: proof.clone(),
+        })
+        .unwrap();
+
+        assert!(new_key.exists());
+        assert!(new_pass.exists());
+        assert!(proof.exists());
+        let registry = astragrid_core::OperatorRegistry::load_from_file(&registry_path).unwrap();
+        assert_eq!(
+            registry.get(&old.identity().id).unwrap().status,
+            astragrid_core::OperatorStatus::Revoked
+        );
+        let new_id = result["new_operator_id"].as_str().unwrap();
+        assert_eq!(
+            registry.get(new_id).unwrap().status,
+            astragrid_core::OperatorStatus::Active
+        );
+    }
+
+    #[test]
+    fn encrypted_ledger_vault_round_trips_events() {
+        let dir = tempdir().unwrap();
+        let passphrase = dir.path().join("vault.pass");
+        fs::write(&passphrase, b"vault-pass").unwrap();
+        let vault = dir.path().join("mission.vault.json");
+
+        vault_init(&vault, &passphrase, "field-ready", "local-operator").unwrap();
+        vault_append(VaultAppendRequest {
+            ledger: vault.clone(),
+            passphrase_file: passphrase.clone(),
+            actor: "lead".to_owned(),
+            role: astragrid_core::Role::IncidentCommander,
+            action: astragrid_core::Action::AnnotateSituation,
+            subject: "river-east".to_owned(),
+            priority: astragrid_core::Priority::Routine,
+            payload: json!({"note": "encrypted runtime append"}),
+        })
+        .unwrap();
+        let verification = vault_verify(&vault, &passphrase).unwrap();
+        assert!(verification["verification"]["valid"].as_bool().unwrap());
+        let tail = vault_tail(&vault, &passphrase, 10).unwrap();
+        assert_eq!(tail["events"].as_array().unwrap().len(), 2);
+        let text = fs::read_to_string(&vault).unwrap();
+        assert!(text.contains("ciphertext"));
+        assert!(!text.contains("encrypted runtime append"));
     }
 
     #[test]

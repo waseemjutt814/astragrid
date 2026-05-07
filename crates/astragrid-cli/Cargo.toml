@@ -34,6 +34,7 @@ astragrid-sync = { path = "../astragrid-sync" }
 astragrid-sync-queue = { path = "../astragrid-sync-queue" }
 astragrid-workflow = { path = "../astragrid-workflow" }
 clap.workspace = true
+rand_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true

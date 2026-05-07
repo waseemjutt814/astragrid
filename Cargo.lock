@@ -141,6 +141,7 @@ dependencies = [
  "astragrid-workflow",
  "clap",
  "hex",
+ "rand_core",
  "serde",
  "serde_json",
  "sha2",

@@ -78,3 +78,12 @@ This is the completed build checklist for the current high-value phases.
 - [x] Upgrade the local source installer to install the same runtime helper set and write a manifest.
 - [x] Add package smoke automation that extracts the zip, verifies required files, runs no-arg/version smoke, runs the verifier, and checks installer output.
 - [x] Add an `ops artifact-retention` CLI gate with dry-run-by-default reporting, explicit deletion, dist retention, cache retention, and optional target-cache cleanup.
+
+## Next Wave: Ready-To-Use Operator Core
+
+- [x] Add `setup first-run` to create workspace folders, an encrypted operator key, passphrase file, registry enrollment, genesis ledger, store DB, and secure profile.
+- [x] Add `doctor profile` to validate a local profile and its configured workspace artifacts.
+- [x] Add sealed workspace `ops backup` and `ops restore` commands with manifest hashes and fail-closed restore validation.
+- [x] Add `identity rotate` to revoke an old operator id, create a new encrypted key, enroll it, and write rotation proof.
+- [x] Add encrypted-at-rest `vault` ledger runtime commands for init, append, verify, and tail without storing a plaintext ledger as the primary artifact.
+- [x] Extend the acceptance pack so fresh-machine style runs cover first-run setup, profile doctor, backup/restore, key rotation, and encrypted vault operations.

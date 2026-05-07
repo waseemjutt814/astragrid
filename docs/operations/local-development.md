@@ -378,3 +378,17 @@ cargo run -q -p astragrid -- ops artifact-retention --root . --max-cache-age-day
 
 The retention command refuses paths outside the workspace root and never deletes anything without
 `--delete`.
+
+## Ready-To-Use Workspace Smoke
+
+```powershell
+$root = ".cache\ready-workspace"
+cargo run -q -p astragrid -- setup first-run --root $root --mission flood-watch --operator-name lead --role incident_commander
+cargo run -q -p astragrid -- doctor profile --profile "$root\astragrid.profile.json"
+cargo run -q -p astragrid -- ops backup --profile "$root\astragrid.profile.json" --output "$root\data\backups\workspace.sealed.json" --passphrase-file "$root\data\operators\lead.pass"
+cargo run -q -p astragrid -- ops restore --input "$root\data\backups\workspace.sealed.json" --output-dir ".cache\ready-restore" --passphrase-file "$root\data\operators\lead.pass"
+cargo run -q -p astragrid -- vault init --ledger "$root\data\mission.vault.json" --passphrase-file "$root\data\operators\lead.pass" --mission flood-watch
+cargo run -q -p astragrid -- vault verify --ledger "$root\data\mission.vault.json" --passphrase-file "$root\data\operators\lead.pass"
+```
+
+See `docs/operations/ready-to-use-runbook.md` for the complete operator workflow.
