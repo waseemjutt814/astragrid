@@ -13,6 +13,7 @@ members = [
     "crates/astragrid-map",
     "crates/astragrid-net",
     "crates/astragrid-oskey",
+    "crates/astragrid-policy-pack",
     "crates/astragrid-provenance",
     "crates/astragrid-recommend",
     "crates/astragrid-report",

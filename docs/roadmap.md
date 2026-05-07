@@ -95,3 +95,12 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add `team append` so mission mutation can require a valid team session plus the matching operator signing key.
 - [x] Add signed device pairing grants with device id/name, operator identity, registry digest, expiry, and verification.
 - [x] Extend the acceptance pack and unit tests to cover session issue/verify, authorization, authenticated append, and pairing verify.
+
+## Next Wave: Signed Policy Rule Packs
+
+- [x] Add `astragrid-policy-pack` with schema validation, compatibility metadata, rule matching, payload-field requirements, and deterministic SHA-256 digests.
+- [x] Add detached policy-pack signatures and fail-closed verification against the signed pack digest.
+- [x] Add registry-aware signer checks so policy packs can require an active enrolled operator signer.
+- [x] Add `policy-pack template`, `sign`, `verify`, and `evaluate` CLI commands.
+- [x] Wire verified policy pack enforcement into `append-signed` and `team append`.
+- [x] Extend acceptance coverage and docs for signed policy pack verification and enforcement.

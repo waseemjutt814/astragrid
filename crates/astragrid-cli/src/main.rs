@@ -23,6 +23,9 @@ use astragrid_harvest::{HarvestRequest, SourceProfile, harvest_geojson, harvest_
 use astragrid_map::{MapConsoleDocument, MapDocument};
 use astragrid_net::{PeerEndpoint, fetch_ledger_snapshot, plan_multi_peer_sync, serve_ledger_once};
 use astragrid_oskey::OsSealedSecret;
+use astragrid_policy_pack::{
+    PolicyRulePack, PolicyRulePackSignature, PolicyRulePackSignatureReport,
+};
 use astragrid_provenance::{
     PackageProvenance, ProvenanceQuorumEnvelope, ProvenanceSignatureEnvelope, ReleaseCustodyPolicy,
 };
@@ -153,6 +156,10 @@ enum Commands {
         #[arg(long)]
         registry: Option<PathBuf>,
         #[arg(long)]
+        policy_pack: Option<PathBuf>,
+        #[arg(long)]
+        policy_signature: Option<PathBuf>,
+        #[arg(long)]
         action: Action,
         #[arg(long)]
         subject: String,
@@ -188,6 +195,11 @@ enum Commands {
         priority: Priority,
         #[arg(long, default_value = "{}")]
         payload: String,
+    },
+    /// Build, sign, verify, and evaluate signed policy rule packs.
+    PolicyPack {
+        #[command(subcommand)]
+        command: PolicyPackCommands,
     },
     /// Manage local operator signing identities.
     Identity {
@@ -298,6 +310,62 @@ enum Commands {
     Supervisor {
         #[command(subcommand)]
         command: SupervisorCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyPackCommands {
+    /// Write a starter field-safety policy rule pack.
+    Template {
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value = "field-safety")]
+        name: String,
+        #[arg(long, default_value = "1.0.0")]
+        version: String,
+    },
+    /// Sign a policy rule pack with a local operator identity.
+    Sign {
+        #[arg(long)]
+        pack: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_os_key: Option<PathBuf>,
+    },
+    /// Verify a policy rule pack and optional detached signature.
+    Verify {
+        #[arg(long)]
+        pack: PathBuf,
+        #[arg(long)]
+        signature: Option<PathBuf>,
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
+    /// Evaluate a command request through core policy plus a rule pack.
+    Evaluate {
+        #[arg(long)]
+        pack: PathBuf,
+        #[arg(long)]
+        signature: Option<PathBuf>,
+        #[arg(long)]
+        registry: Option<PathBuf>,
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        role: Role,
+        #[arg(long)]
+        action: Action,
+        #[arg(long)]
+        subject: String,
+        #[arg(long, default_value_t = Priority::Routine)]
+        priority: Priority,
+        #[arg(long, default_value = "{}")]
+        payload: String,
     },
 }
 
@@ -488,6 +556,10 @@ enum TeamCommands {
         registry: PathBuf,
         #[arg(long)]
         session: PathBuf,
+        #[arg(long)]
+        policy_pack: Option<PathBuf>,
+        #[arg(long)]
+        policy_signature: Option<PathBuf>,
         #[arg(long)]
         action: Action,
         #[arg(long)]
@@ -1512,6 +1584,8 @@ fn main() -> Result<()> {
             passphrase_file,
             passphrase_os_key,
             registry,
+            policy_pack,
+            policy_signature,
             action,
             subject,
             priority,
@@ -1530,6 +1604,19 @@ fn main() -> Result<()> {
                 priority,
                 payload,
             );
+            if let Some(policy_pack) = policy_pack {
+                let decision = evaluate_policy_pack_file(
+                    &policy_pack,
+                    policy_signature.as_ref(),
+                    registry.as_ref(),
+                    &request,
+                )?;
+                if !decision.allowed {
+                    bail!("policy rule pack denied command: {}", decision.reason);
+                }
+            } else if policy_signature.is_some() {
+                bail!("--policy-signature requires --policy-pack");
+            }
             let ledger = MissionLedger::open(ledger);
             let signed = keypair.sign_request(request)?;
             let event = match registry {
@@ -1565,6 +1652,84 @@ fn main() -> Result<()> {
             let decision = astragrid_core::AdmissionPolicy.evaluate(&request);
             print_json(&decision)
         }
+        Commands::PolicyPack { command } => match command {
+            PolicyPackCommands::Template {
+                output,
+                name,
+                version,
+            } => {
+                let pack = PolicyRulePack::field_safety_template(name, version);
+                pack.validate()?;
+                write_json_file(&output, &pack)?;
+                print_json(&json!({
+                    "output": output,
+                    "name": pack.name,
+                    "version": pack.version,
+                    "rules": pack.rules.len(),
+                    "sha256": pack.sha256()?,
+                }))
+            }
+            PolicyPackCommands::Sign {
+                pack,
+                output,
+                identity,
+                passphrase_file,
+                passphrase_os_key,
+            } => {
+                let pack_doc: PolicyRulePack = read_json_file(&pack)?;
+                let keypair = load_keypair(
+                    &identity,
+                    passphrase_file.as_ref(),
+                    passphrase_os_key.as_ref(),
+                )?;
+                let signature = PolicyRulePackSignature::sign_pack(&pack_doc, &keypair)?;
+                write_json_file(&output, &signature)?;
+                print_json(&json!({
+                    "pack": pack,
+                    "output": output,
+                    "pack_sha256": signature.pack_sha256,
+                    "signer": signature.signature.identity,
+                }))
+            }
+            PolicyPackCommands::Verify {
+                pack,
+                signature,
+                registry,
+            } => {
+                let report = verify_policy_pack_file(&pack, signature.as_ref(), registry.as_ref())?;
+                print_json(&report)?;
+                if !report["valid"].as_bool().unwrap_or(false) {
+                    bail!("policy rule pack verification failed");
+                }
+                Ok(())
+            }
+            PolicyPackCommands::Evaluate {
+                pack,
+                signature,
+                registry,
+                actor,
+                role,
+                action,
+                subject,
+                priority,
+                payload,
+            } => {
+                let request = CommandRequest::new(
+                    Actor::new(actor, role),
+                    action,
+                    subject,
+                    priority,
+                    read_payload(&payload)?,
+                );
+                let decision = evaluate_policy_pack_file(
+                    &pack,
+                    signature.as_ref(),
+                    registry.as_ref(),
+                    &request,
+                )?;
+                print_json(&decision)
+            }
+        },
         Commands::Identity { command } => match command {
             IdentityCommands::Create {
                 path,
@@ -1764,6 +1929,8 @@ fn main() -> Result<()> {
                 passphrase_os_key,
                 registry,
                 session,
+                policy_pack,
+                policy_signature,
                 action,
                 subject,
                 priority,
@@ -1775,6 +1942,8 @@ fn main() -> Result<()> {
                 passphrase_os_key,
                 registry,
                 session,
+                policy_pack,
+                policy_signature,
                 action,
                 subject,
                 priority,
@@ -3058,6 +3227,8 @@ struct TeamAppendRequest {
     passphrase_os_key: Option<PathBuf>,
     registry: PathBuf,
     session: PathBuf,
+    policy_pack: Option<PathBuf>,
+    policy_signature: Option<PathBuf>,
     action: Action,
     subject: String,
     priority: Priority,
@@ -3849,6 +4020,94 @@ fn rotate_operator_key(request: RotateOperatorRequest) -> Result<Value> {
     }))
 }
 
+fn verify_policy_pack_file(
+    pack_path: &PathBuf,
+    signature_path: Option<&PathBuf>,
+    registry_path: Option<&PathBuf>,
+) -> Result<Value> {
+    let pack: PolicyRulePack = read_json_file(pack_path)?;
+    pack.validate()?;
+    let pack_sha256 = pack.sha256()?;
+    let signature_report = match signature_path {
+        Some(signature_path) => {
+            let signature: PolicyRulePackSignature = read_json_file(signature_path)?;
+            Some(signature.verify_pack(&pack)?)
+        }
+        None => None,
+    };
+    let registry_report = verify_policy_pack_registry(registry_path, signature_report.as_ref())?;
+    let valid = signature_report.as_ref().is_none_or(|report| report.valid)
+        && registry_report["valid"].as_bool().unwrap_or(false);
+    Ok(json!({
+        "valid": valid,
+        "pack": pack_path,
+        "pack_sha256": pack_sha256,
+        "rules": pack.rules.len(),
+        "signature": signature_path,
+        "signature_report": signature_report,
+        "registry": registry_path,
+        "registry_report": registry_report,
+    }))
+}
+
+fn evaluate_policy_pack_file(
+    pack_path: &PathBuf,
+    signature_path: Option<&PathBuf>,
+    registry_path: Option<&PathBuf>,
+    request: &CommandRequest,
+) -> Result<astragrid_policy_pack::PolicyPackDecision> {
+    let verification = verify_policy_pack_file(pack_path, signature_path, registry_path)?;
+    if !verification["valid"].as_bool().unwrap_or(false) {
+        bail!("policy rule pack verification failed");
+    }
+    let pack: PolicyRulePack = read_json_file(pack_path)?;
+    pack.evaluate_request(request).map_err(Into::into)
+}
+
+fn verify_policy_pack_registry(
+    registry_path: Option<&PathBuf>,
+    signature_report: Option<&PolicyRulePackSignatureReport>,
+) -> Result<Value> {
+    let Some(registry_path) = registry_path else {
+        return Ok(json!({
+            "valid": true,
+            "checked": false,
+            "reason": "no registry requested",
+        }));
+    };
+    let Some(signature_report) = signature_report else {
+        return Ok(json!({
+            "valid": false,
+            "checked": true,
+            "reason": "registry verification requires a policy pack signature",
+        }));
+    };
+    if !signature_report.valid {
+        return Ok(json!({
+            "valid": false,
+            "checked": true,
+            "reason": "policy pack signature is invalid",
+        }));
+    }
+    if !signature_report.signer.role.allows(Role::Operator) {
+        return Ok(json!({
+            "valid": false,
+            "checked": true,
+            "operator_id": signature_report.signer.id,
+            "reason": "policy pack signer must be operator or higher",
+        }));
+    }
+    let registry = OperatorRegistry::load_from_file(registry_path)?;
+    let active = registry_identity_status(&signature_report.signer, &registry);
+    Ok(json!({
+        "valid": active.is_ok(),
+        "checked": true,
+        "registry": registry_path,
+        "operator_id": signature_report.signer.id,
+        "status": active.err(),
+    }))
+}
+
 fn issue_team_session(request: TeamSessionIssueRequest) -> Result<Value> {
     if request.ttl_minutes <= 0 {
         bail!("session ttl must be greater than zero");
@@ -4019,6 +4278,19 @@ fn team_append_signed(request: TeamAppendRequest) -> Result<Value> {
         request.priority,
         request.payload,
     );
+    if let Some(policy_pack) = &request.policy_pack {
+        let decision = evaluate_policy_pack_file(
+            policy_pack,
+            request.policy_signature.as_ref(),
+            Some(&request.registry),
+            &command,
+        )?;
+        if !decision.allowed {
+            bail!("policy rule pack denied command: {}", decision.reason);
+        }
+    } else if request.policy_signature.is_some() {
+        bail!("--policy-signature requires --policy-pack");
+    }
     let decision = astragrid_core::AdmissionPolicy.evaluate(&command);
     if !decision.allowed {
         bail!("team session is not authorized: {}", decision.reason);
@@ -4349,6 +4621,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "encrypted ledger vault",
             "team session authorization",
             "secure device pairing",
+            "signed policy rule pack",
             "package provenance"
         ]
     });
@@ -4425,7 +4698,10 @@ try {{
     $registry = Join-Path $Run 'operators.agregistry'
     $session = Join-Path $Run 'lead.session.json'
     $pairing = Join-Path $Run 'field-device.pairing.json'
+    $policyPack = Join-Path $Run 'field-safety.policy.json'
+    $policySignature = Join-Path $Run 'field-safety.policy.sig.json'
     $payload = Join-Path $Run 'payload.json'
+    $dispatchPayload = Join-Path $Run 'dispatch-payload.json'
     $evidence = Join-Path $Run 'evidence.json'
     $bundle = Join-Path $Run 'close-bundle.json'
     $draft = Join-Path $Run 'draft.json'
@@ -4451,6 +4727,7 @@ try {{
 
     'acceptance local passphrase' | Set-Content -Encoding UTF8 $passphrase
     '{{"water_level_m":5.2}}' | Set-Content -Encoding UTF8 $payload
+    '{{"team_id":"alpha"}}' | Set-Content -Encoding UTF8 $dispatchPayload
     '{{"note":"vault runtime append"}}' | Set-Content -Encoding UTF8 $vaultPayload
     '[{{"id":"sensor-1","source":"river-gauge","kind":"sensor","confidence":0.94,"digest":"sensor-digest","excerpt":"water=5.2"}}]' | Set-Content -Encoding UTF8 $evidence
     '{{"type":"Feature","id":"river-east","properties":{{"risk":"flood"}},"geometry":{{"type":"Point","coordinates":[72.2,31.2]}}}}' | Set-Content -Encoding UTF8 $geo
@@ -4476,6 +4753,11 @@ try {{
     Invoke-AstraGrid team append --ledger $ledger --identity $identity --passphrase-file $passphrase --registry $registry --session $session --action declare_incident --subject river-east --priority critical --payload "@$payload"
     Invoke-AstraGrid team pair-create --identity $identity --passphrase-file $passphrase --registry $registry --device-id field-tablet-01 --device-name 'Field Tablet 01' --output $pairing --ttl-minutes 30
     Invoke-AstraGrid team pair-verify --input $pairing --registry $registry
+    Invoke-AstraGrid policy-pack template --output $policyPack --name field-safety --version 1.0.0
+    Invoke-AstraGrid policy-pack sign --pack $policyPack --output $policySignature --identity $identity --passphrase-file $passphrase
+    Invoke-AstraGrid policy-pack verify --pack $policyPack --signature $policySignature --registry $registry
+    Invoke-AstraGrid policy-pack evaluate --pack $policyPack --signature $policySignature --registry $registry --actor lead --role incident_commander --action dispatch_team --subject river-east --priority elevated --payload "@$dispatchPayload"
+    Invoke-AstraGrid team append --ledger $ledger --identity $identity --passphrase-file $passphrase --registry $registry --session $session --policy-pack $policyPack --policy-signature $policySignature --action dispatch_team --subject river-east --priority elevated --payload "@$dispatchPayload"
     Invoke-AstraGrid verify --ledger $ledger
     Invoke-AstraGrid store ingest --ledger $ledger --db $db
     Invoke-AstraGrid evidence build --mission flood-watch --evidence $evidence --action close_incident --subject river-east --rationale 'Water receded below incident threshold.' --confidence 0.91 --evidence-id sensor-1 --output $bundle
@@ -5685,17 +5967,18 @@ mod tests {
     use super::{
         ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands,
         DevicePairingRequest, DoctorCommands, FirstRunRequest, GeoCommands, IdentityCommands,
-        OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands, ReadinessGateRequest,
-        RecommendCommands, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest, RestoreRequest,
-        RotateOperatorRequest, SetupCommands, TeamAppendRequest, TeamSessionIssueRequest,
-        VaultAppendRequest, VaultCommands, WorkspaceProfile, acceptance_scenario,
-        authorize_team_action, build_registry_trust_bundle, create_device_pairing,
-        default_signature_output_path, export_ops_bundle, http_request_path, http_response,
-        import_registry_trust_bundle, inject_meta_refresh, issue_team_session, read_payload,
-        render_acceptance_script, render_default_launcher, restore_workspace_backup,
-        rotate_operator_key, run_artifact_retention, run_first_run_setup, run_profile_doctor,
-        run_readiness_gate, sha256_file_hex, team_append_signed, vault_append, vault_init,
-        vault_tail, vault_verify, verify_device_pairing_file, verify_registry_trust_bundle,
+        OpsBundleRequest, OpsCommands, PeerQueueCommands, PolicyPackCommands, ProvenanceCommands,
+        ReadinessGateRequest, RecommendCommands, ReleaseCustodyPackRequest,
+        ReleaseEvidencePackRequest, RestoreRequest, RotateOperatorRequest, SetupCommands,
+        TeamAppendRequest, TeamSessionIssueRequest, VaultAppendRequest, VaultCommands,
+        WorkspaceProfile, acceptance_scenario, authorize_team_action, build_registry_trust_bundle,
+        create_device_pairing, default_signature_output_path, evaluate_policy_pack_file,
+        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
+        inject_meta_refresh, issue_team_session, read_payload, render_acceptance_script,
+        render_default_launcher, restore_workspace_backup, rotate_operator_key,
+        run_artifact_retention, run_first_run_setup, run_profile_doctor, run_readiness_gate,
+        sha256_file_hex, team_append_signed, vault_append, vault_init, vault_tail, vault_verify,
+        verify_device_pairing_file, verify_policy_pack_file, verify_registry_trust_bundle,
         verify_team_session_file, write_acceptance_pack, write_release_custody_pack,
         write_release_evidence_pack, write_workspace_backup,
     };
@@ -5727,6 +6010,70 @@ mod tests {
         let input = format!("@{}", file.path().display());
 
         assert_eq!(read_payload(&input).unwrap(), json!({"water_level_m": 5.2}));
+    }
+
+    #[test]
+    fn parses_policy_pack_commands() {
+        let template = Cli::try_parse_from([
+            "astragrid",
+            "policy-pack",
+            "template",
+            "--output",
+            "ops/policy-pack.json",
+            "--name",
+            "field-safety",
+        ])
+        .unwrap();
+        match template.command.expect("command") {
+            Commands::PolicyPack {
+                command: PolicyPackCommands::Template { output, name, .. },
+            } => {
+                assert_eq!(output, PathBuf::from("ops/policy-pack.json"));
+                assert_eq!(name, "field-safety");
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let evaluate = Cli::try_parse_from([
+            "astragrid",
+            "policy-pack",
+            "evaluate",
+            "--pack",
+            "ops/policy-pack.json",
+            "--signature",
+            "ops/policy-pack.sig.json",
+            "--registry",
+            "data/operators.agregistry",
+            "--actor",
+            "lead",
+            "--role",
+            "incident_commander",
+            "--action",
+            "dispatch_team",
+            "--subject",
+            "river-east",
+            "--priority",
+            "elevated",
+        ])
+        .unwrap();
+        match evaluate.command.expect("command") {
+            Commands::PolicyPack {
+                command:
+                    PolicyPackCommands::Evaluate {
+                        pack,
+                        signature,
+                        registry,
+                        action,
+                        ..
+                    },
+            } => {
+                assert_eq!(pack, PathBuf::from("ops/policy-pack.json"));
+                assert_eq!(signature, Some(PathBuf::from("ops/policy-pack.sig.json")));
+                assert_eq!(registry, Some(PathBuf::from("data/operators.agregistry")));
+                assert_eq!(action, astragrid_core::Action::DispatchTeam);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
     }
 
     #[test]
@@ -6988,6 +7335,8 @@ mod tests {
         let registry_path = dir.path().join("operators.agregistry");
         let session_path = dir.path().join("lead.session.json");
         let pairing_path = dir.path().join("device-pairing.json");
+        let policy_pack_path = dir.path().join("field-safety.policy.json");
+        let policy_signature_path = dir.path().join("field-safety.policy.sig.json");
         fs::write(&passphrase_path, b"team-pass").unwrap();
 
         let ledger = astragrid_core::MissionLedger::open(&ledger_path);
@@ -7012,6 +7361,31 @@ mod tests {
             .enroll(keypair.identity().clone(), "local-command")
             .unwrap();
         registry.save_to_file(&registry_path).unwrap();
+        let policy_pack =
+            astragrid_policy_pack::PolicyRulePack::field_safety_template("field-safety", "1.0.0");
+        let policy_signature =
+            astragrid_policy_pack::PolicyRulePackSignature::sign_pack(&policy_pack, &keypair)
+                .unwrap();
+        fs::write(
+            &policy_pack_path,
+            serde_json::to_vec_pretty(&policy_pack).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &policy_signature_path,
+            serde_json::to_vec_pretty(&policy_signature).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            verify_policy_pack_file(
+                &policy_pack_path,
+                Some(&policy_signature_path),
+                Some(&registry_path),
+            )
+            .unwrap()["valid"]
+                .as_bool()
+                .unwrap()
+        );
 
         issue_team_session(TeamSessionIssueRequest {
             identity: key_path.clone(),
@@ -7035,6 +7409,20 @@ mod tests {
         )
         .unwrap();
         assert!(authorization["authorized"].as_bool().unwrap());
+        let blocked_by_pack = evaluate_policy_pack_file(
+            &policy_pack_path,
+            Some(&policy_signature_path),
+            Some(&registry_path),
+            &astragrid_core::CommandRequest::new(
+                astragrid_core::Actor::new("lead", astragrid_core::Role::IncidentCommander),
+                astragrid_core::Action::DispatchTeam,
+                "river-east",
+                astragrid_core::Priority::Elevated,
+                json!({"note": "missing team id"}),
+            ),
+        )
+        .unwrap();
+        assert!(!blocked_by_pack.allowed);
 
         let append = team_append_signed(TeamAppendRequest {
             ledger: ledger_path.clone(),
@@ -7043,10 +7431,12 @@ mod tests {
             passphrase_os_key: None,
             registry: registry_path.clone(),
             session: session_path.clone(),
-            action: astragrid_core::Action::DeclareIncident,
+            policy_pack: Some(policy_pack_path),
+            policy_signature: Some(policy_signature_path),
+            action: astragrid_core::Action::DispatchTeam,
             subject: "river-east".to_owned(),
-            priority: astragrid_core::Priority::Critical,
-            payload: json!({"water_level_m": 5.2}),
+            priority: astragrid_core::Priority::Elevated,
+            payload: json!({"team_id": "alpha"}),
         })
         .unwrap();
         assert!(append["authorized"].as_bool().unwrap());

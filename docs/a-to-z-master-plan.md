@@ -32,6 +32,9 @@ gated until those inputs exist.
 - **Local team security core:** `team session-issue`, `team session-verify`, `team authorize`,
   `team append`, `team pair-create`, and `team pair-verify` add signed local sessions,
   registry-bound permission checks, and signed device pairing grants with executable tests.
+- **Signed policy rule packs:** `policy-pack template`, `policy-pack sign`, `policy-pack verify`,
+  and `policy-pack evaluate` add compatibility-checked rule bundles, detached signatures,
+  registry-verified signers, and enforcement hooks on signed append paths.
 
 ## A-to-Z Delivery Gates
 
@@ -52,7 +55,7 @@ gated until those inputs exist.
 | M | Multi-host federation beyond bundle import | Trust bundles and peer sync exist; federation daemon needs multi-node integration tests. |
 | N | Offline map tile packs | Map export exists; tile packs need a licensed tile source and pack manifest validation. |
 | O | Operator audit timeline UI | Dashboard has recent events; timeline UI needs grouped audit interactions and export tests. |
-| P | Policy rule pack system | Core policy exists; pack system needs signed rule bundles and compatibility checks. |
+| P | Policy rule pack system | Complete for local operation: policy packs validate schema/compatibility/rules, detached signatures bind the pack digest, registry checks verify active signer authority, and append paths can enforce a verified pack. |
 | Q | Quorum enrollment for operators | Release quorum exists; operator enrollment quorum needs registry admission flow changes. |
 | R | Replication daemon with service hardening | Peer queue worker and supervisor kits exist; replication daemon needs lifecycle hardening. |
 | S | Secure device pairing | Complete for local signed pairing grants: pairing bundles bind device id/name, operator identity, registry digest, expiry, and signature. Network UX and revocation distribution remain future service work. |
@@ -66,7 +69,7 @@ gated until those inputs exist.
 
 ## Next No-Fake Order
 
-1. Add signed policy rule packs and quorum enrollment for sensitive operator changes.
+1. Add quorum enrollment for sensitive operator changes.
 2. Add federation daemon service hardening and worker watchdog recovery.
 3. Add service-bound team sessions once the long-running API boundary exists.
 4. Add platform package expansion only when signing/notary/release-channel credentials exist.

@@ -129,6 +129,7 @@ dependencies = [
  "astragrid-map",
  "astragrid-net",
  "astragrid-oskey",
+ "astragrid-policy-pack",
  "astragrid-provenance",
  "astragrid-recommend",
  "astragrid-report",
@@ -305,6 +306,17 @@ dependencies = [
  "tempfile",
  "thiserror",
  "windows-sys",
+]
+
+[[package]]
+name = "astragrid-policy-pack"
+version = "0.1.0"
+dependencies = [
+ "astragrid-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

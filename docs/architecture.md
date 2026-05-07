@@ -136,6 +136,19 @@ active operator, registry fingerprint, expiry, nonce, and detached signature. `t
 validates the grant without guessing any transport or mobile-app behavior. Service-side pairing UX
 and remote revocation distribution are future work for the long-running service boundary.
 
+## Signed Policy Rule Packs
+
+`astragrid-policy-pack` adds mission-specific rule bundles on top of the built-in admission policy.
+A pack contains schema and compatibility metadata plus rules that can match action and subject
+prefix, raise the minimum role, restrict priority values, require payload fields, or deny a matched
+request with an operator-readable reason.
+
+`policy-pack sign` signs the canonical pack digest with a local operator identity. `policy-pack
+verify` recomputes the digest, verifies the detached signature, and can require the signer to be an
+active entry in a trusted operator registry. `policy-pack evaluate` runs the built-in policy first
+and then applies matching pack rules. `append-signed` and `team append` can enforce a verified pack
+before ledger mutation, so local teams can harden mission rules without editing core code.
+
 ## Mission Store
 
 `astragrid-store` indexes verified ledgers into SQLite. Ingest is idempotent and refuses corrupt

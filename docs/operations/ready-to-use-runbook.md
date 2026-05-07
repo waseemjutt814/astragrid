@@ -67,6 +67,23 @@ Create and verify a signed device pairing grant:
 Sessions and pairing grants fail closed when the signature, registry fingerprint, active identity,
 or expiry check fails.
 
+## Signed Policy Rule Pack
+
+Create, sign, verify, and evaluate a local policy pack:
+
+```powershell
+.\target\release\astragrid.exe policy-pack template --output ops\field\data\field-safety.policy.json --name field-safety --version 1.0.0
+.\target\release\astragrid.exe policy-pack sign --pack ops\field\data\field-safety.policy.json --output ops\field\data\field-safety.policy.sig.json --identity ops\field\data\operators\lead.agkey --passphrase-file ops\field\data\operators\lead.pass
+.\target\release\astragrid.exe policy-pack verify --pack ops\field\data\field-safety.policy.json --signature ops\field\data\field-safety.policy.sig.json --registry ops\field\data\operators\operators.agregistry
+.\target\release\astragrid.exe policy-pack evaluate --pack ops\field\data\field-safety.policy.json --signature ops\field\data\field-safety.policy.sig.json --registry ops\field\data\operators\operators.agregistry --actor lead --role incident_commander --action dispatch_team --subject river-east --priority elevated --payload '{"team_id":"alpha"}'
+```
+
+Enforce the verified pack on team-authenticated mutation:
+
+```powershell
+.\target\release\astragrid.exe team append --ledger ops\field\data\mission.agl --identity ops\field\data\operators\lead.agkey --passphrase-file ops\field\data\operators\lead.pass --registry ops\field\data\operators\operators.agregistry --session ops\field\data\operators\lead.session.json --policy-pack ops\field\data\field-safety.policy.json --policy-signature ops\field\data\field-safety.policy.sig.json --action dispatch_team --subject river-east --priority elevated --payload '{"team_id":"alpha"}'
+```
+
 ## Backup
 
 ```powershell
@@ -136,5 +153,7 @@ Delete only after reviewing the report:
 - Missing key: profile doctor reports the identity path failure.
 - Expired or revoked team session: `team session-verify`, `team authorize`, and `team append` fail.
 - Broken pairing grant: `team pair-verify` fails before a device is trusted.
+- Unsigned, tampered, or unauthorized policy pack: `policy-pack verify`, `policy-pack evaluate`, and
+  policy-enforced append paths fail before ledger mutation.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

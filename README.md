@@ -8,7 +8,7 @@ ingestion, evidence bundles, authenticated peer snapshots, offline sync planning
 artifact sealing, materialized mission state, report export, packaging scripts, approval-gated
 workflow execution, executable acceptance scenarios, operator dashboard export, workspace doctor,
 admission policy checks, signed local team sessions, secure device pairing grants,
-evidence-to-command workflow drafting, and a CLI.
+signed policy rule packs, evidence-to-command workflow drafting, and a CLI.
 
 ## What Exists Now
 
@@ -25,6 +25,8 @@ evidence-to-command workflow drafting, and a CLI.
 - Signed local team sessions that verify registry fingerprint, active identity, signature, and expiry.
 - Team-authorized signed append path that requires both a valid session and the matching operator key.
 - Signed device pairing grants with expiry, registry binding, and fail-closed verification.
+- Signed policy rule packs with compatibility checks, registry-verified signers, and command evaluation.
+- Team and signed append paths can enforce a verified policy rule pack before mutating the ledger.
 - First-run setup that creates a local workspace profile, encrypted operator key, registry, genesis ledger, store DB, and required folders.
 - Workspace profile doctor validation for configured local paths and artifacts.
 - Operator key rotation that revokes the old id, enrolls the new encrypted key, and writes rotation proof.
@@ -73,7 +75,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Peer worker service kits with generated install and uninstall wrappers.
 - Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.
-- `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `team`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
+- `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `policy-pack`, `identity`, `team`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
 - GitHub Actions CI for formatting, linting, tests, build, and docs.
 - Release packaging emits SHA-256 provenance JSON and includes Windows launch/smoke helpers.
 
@@ -89,8 +91,11 @@ cargo run -p astragrid -- identity registry-init --registry data/operators/opera
 cargo run -p astragrid -- identity enroll --registry data/operators/operators.agregistry --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --issued-by local-command
 New-Item -ItemType Directory -Force data/sessions | Out-Null
 cargo run -p astragrid -- team session-issue --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --registry data/operators/operators.agregistry --output data/sessions/lead.session.json --ttl-minutes 480
+cargo run -p astragrid -- policy-pack template --output data/field-safety.policy.json
+cargo run -p astragrid -- policy-pack sign --pack data/field-safety.policy.json --output data/field-safety.policy.sig.json --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass
+cargo run -p astragrid -- policy-pack verify --pack data/field-safety.policy.json --signature data/field-safety.policy.sig.json --registry data/operators/operators.agregistry
 '{ "water_level_m": 5.2 }' | Set-Content -Encoding UTF8 data/river-east.json
-cargo run -p astragrid -- team append --ledger data/mission.agl --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --registry data/operators/operators.agregistry --session data/sessions/lead.session.json --action declare_incident --subject river-east --priority critical --payload '@data/river-east.json'
+cargo run -p astragrid -- team append --ledger data/mission.agl --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --registry data/operators/operators.agregistry --session data/sessions/lead.session.json --policy-pack data/field-safety.policy.json --policy-signature data/field-safety.policy.sig.json --action declare_incident --subject river-east --priority critical --payload '@data/river-east.json'
 cargo run -p astragrid -- verify --ledger data/mission.agl
 cargo run -p astragrid -- store ingest --ledger data/mission.agl --db data/mission.db
 cargo run -p astragrid -- store summary --db data/mission.db
@@ -118,6 +123,7 @@ AstraGrid is built around four non-negotiables:
 - `crates/astragrid-map`: self-contained HTML/SVG feature map export.
 - `crates/astragrid-net`: authenticated peer ledger snapshots.
 - `crates/astragrid-oskey`: OS-sealed local secret envelopes.
+- `crates/astragrid-policy-pack`: signed mission policy rule packs.
 - `crates/astragrid-provenance`: release provenance verification.
 - `crates/astragrid-recommend`: deterministic evidence-bound recommendation rules.
 - `crates/astragrid-report`: Markdown incident reports.

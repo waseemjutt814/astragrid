@@ -23,6 +23,7 @@ astragrid-harvest = { path = "../astragrid-harvest" }
 astragrid-map = { path = "../astragrid-map" }
 astragrid-net = { path = "../astragrid-net" }
 astragrid-oskey = { path = "../astragrid-oskey" }
+astragrid-policy-pack = { path = "../astragrid-policy-pack" }
 astragrid-provenance = { path = "../astragrid-provenance" }
 astragrid-recommend = { path = "../astragrid-recommend" }
 astragrid-report = { path = "../astragrid-report" }

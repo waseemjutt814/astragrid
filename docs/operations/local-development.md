@@ -391,6 +391,9 @@ cargo run -q -p astragrid -- team session-issue --identity "$root\data\operators
 cargo run -q -p astragrid -- team session-verify --session "$root\data\operators\lead.session.json" --registry "$root\data\operators\operators.agregistry"
 cargo run -q -p astragrid -- team pair-create --identity "$root\data\operators\lead.agkey" --passphrase-file "$root\data\operators\lead.pass" --registry "$root\data\operators\operators.agregistry" --device-id field-tablet-01 --device-name "Field Tablet 01" --output "$root\data\operators\field-tablet-01.pairing.json" --ttl-minutes 30
 cargo run -q -p astragrid -- team pair-verify --input "$root\data\operators\field-tablet-01.pairing.json" --registry "$root\data\operators\operators.agregistry"
+cargo run -q -p astragrid -- policy-pack template --output "$root\data\field-safety.policy.json" --name field-safety --version 1.0.0
+cargo run -q -p astragrid -- policy-pack sign --pack "$root\data\field-safety.policy.json" --output "$root\data\field-safety.policy.sig.json" --identity "$root\data\operators\lead.agkey" --passphrase-file "$root\data\operators\lead.pass"
+cargo run -q -p astragrid -- policy-pack verify --pack "$root\data\field-safety.policy.json" --signature "$root\data\field-safety.policy.sig.json" --registry "$root\data\operators\operators.agregistry"
 cargo run -q -p astragrid -- vault init --ledger "$root\data\mission.vault.json" --passphrase-file "$root\data\operators\lead.pass" --mission flood-watch
 cargo run -q -p astragrid -- vault verify --ledger "$root\data\mission.vault.json" --passphrase-file "$root\data\operators\lead.pass"
 ```
