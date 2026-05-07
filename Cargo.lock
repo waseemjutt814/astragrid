@@ -118,6 +118,7 @@ name = "astragrid"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "astragrid-ai",
  "astragrid-approvals",
  "astragrid-core",
  "astragrid-crypto",
@@ -148,6 +149,18 @@ dependencies = [
  "sha2",
  "tempfile",
  "time",
+]
+
+[[package]]
+name = "astragrid-ai"
+version = "0.1.0"
+dependencies = [
+ "astragrid-evidence",
+ "astragrid-recommend",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

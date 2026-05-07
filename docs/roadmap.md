@@ -169,3 +169,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Deterministically replay divergent branch suffixes into a new hash chain.
 - [x] Emit merge proof mapping source hashes to merged hashes with preserved/replayed markers.
 - [x] Add sync library, CLI parser, acceptance, and docs coverage.
+
+## Next Wave: Evidence-Bound AI Runner
+
+- [x] Add `astragrid-ai` crate for bounded local runner execution.
+- [x] Add `recommend ai-run` with no-shell process launch, stdin evidence request, timeout, and output caps.
+- [x] Reuse structured recommendation validation so unknown evidence citations fail closed.
+- [x] Add runner unit tests for candidate output, envelope output, unknown citations, output caps, and timeout.
+- [x] Extend acceptance coverage and docs for the local runner boundary.

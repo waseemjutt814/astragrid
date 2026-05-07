@@ -23,6 +23,7 @@
 - Evidence bundle hash verification.
 - Deterministic recommendation rules that emit evidence bundles.
 - Structured model recommendation candidates constrained to known evidence ids.
+- Bounded local AI runner with stdin evidence input, timeout, output caps, and citation validation.
 - HTML map export from verified feature records.
 - Browser map console export with mission state overlays.
 - Offline sync divergence detection.
@@ -46,13 +47,11 @@
 
 ## Out of Scope Until Implemented
 
-- Multi-user authentication.
-- Long-running network transport service security.
-- Encrypted ledgers.
+- Remote service multi-user authentication.
+- OS-level AI runner sandbox profiles.
 - Hardware-backed keys.
 - Remote update channels.
 - Remote certificate authority.
-- Automatic conflict merge.
 - Signed release notarization.
 
 ## Design Commitments
@@ -95,3 +94,5 @@
   recommendations are not enough.
 - Recommendation rule outputs must verify as evidence bundles before downstream workflow drafting.
 - Model recommendation adapters must reject unknown evidence references before bundle creation.
+- AI runner execution must avoid shell interpolation, enforce timeout/output limits, and reject
+  unknown evidence citations before bundle creation.

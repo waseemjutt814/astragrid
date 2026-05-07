@@ -117,6 +117,20 @@ The proof records the conflict, the deterministic replay policy, and the source-
 merged-hash mapping. `sync merge` refuses to replace an existing non-empty output unless
 `--overwrite` is passed.
 
+## Evidence-Bound AI Runner
+
+Use `recommend ai-run` only with a real local runner command that reads the request JSON from
+stdin and writes structured candidates. The command below shows the contract with an already
+prepared runner executable:
+
+```powershell
+.\target\release\astragrid.exe recommend ai-run --mission flood-watch --evidence ops\field\data\evidence.json --command ops\field\tools\runner.exe --arg --strict --timeout-ms 5000 --max-stdout-bytes 65536 --output ops\field\data\ai-bundles.json
+```
+
+The runner receives `{ schema_version, mission, evidence, instructions }` on stdin. AstraGrid
+rejects invalid JSON, unknown evidence ids, empty rationales, invalid confidence values,
+non-zero exits, timeouts, and output over the configured byte limits before any bundle is written.
+
 ## Quorum Operator Enrollment
 
 Bootstrap at least two incident commanders before using quorum-governed registry changes. After
@@ -238,5 +252,7 @@ Delete only after reviewing the report:
   revoked registry identity.
 - Existing merge output: `sync merge` stops unless the output is empty or `--overwrite` is
   supplied.
+- AI runner failure: `recommend ai-run` writes no bundle when the runner exits unsuccessfully,
+  times out, exceeds output limits, or cites unknown evidence.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

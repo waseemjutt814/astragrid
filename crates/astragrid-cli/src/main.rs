@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use astragrid_ai::{AiRunnerConfig, AiRunnerRequest, run_evidence_bound_runner};
 use astragrid_approvals::{ApprovalLog, ApprovalStatus};
 use astragrid_core::{
     Action, Actor, CommandRequest, DetachedSignature, MissionLedger, OperatorIdentity,
@@ -1101,6 +1102,31 @@ enum RecommendCommands {
         evidence: PathBuf,
         #[arg(long)]
         candidates: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Run a bounded local AI command and accept only evidence-cited recommendation bundles.
+    AiRun {
+        #[arg(long)]
+        mission: String,
+        #[arg(long)]
+        evidence: PathBuf,
+        #[arg(long)]
+        command: PathBuf,
+        #[arg(long = "arg", allow_hyphen_values = true)]
+        args: Vec<String>,
+        #[arg(long)]
+        working_directory: Option<PathBuf>,
+        #[arg(long, default_value_t = 5_000)]
+        timeout_ms: u64,
+        #[arg(long, default_value_t = 64 * 1024)]
+        max_stdout_bytes: usize,
+        #[arg(long, default_value_t = 16 * 1024)]
+        max_stderr_bytes: usize,
+        #[arg(long)]
+        clear_environment: bool,
+        #[arg(long)]
+        instructions: Option<String>,
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -2843,6 +2869,50 @@ fn main() -> Result<()> {
                             "candidates": report.candidates,
                             "evidence_items": report.evidence_items,
                             "bundles": report.bundles.len(),
+                        }))
+                    }
+                    None => print_json(&report),
+                }
+            }
+            RecommendCommands::AiRun {
+                mission,
+                evidence,
+                command,
+                args,
+                working_directory,
+                timeout_ms,
+                max_stdout_bytes,
+                max_stderr_bytes,
+                clear_environment,
+                instructions,
+                output,
+            } => {
+                let evidence: Vec<EvidenceItem> =
+                    read_json_file(&evidence).context("evidence must be a JSON array")?;
+                let mut request = AiRunnerRequest::new(mission, evidence);
+                request.instructions = instructions;
+                let report = run_evidence_bound_runner(
+                    &AiRunnerConfig {
+                        command,
+                        args,
+                        working_directory,
+                        timeout_ms,
+                        max_stdout_bytes,
+                        max_stderr_bytes,
+                        clear_environment,
+                    },
+                    request,
+                )?;
+                match output {
+                    Some(output) => {
+                        write_json_file(&output, &report.bundles)?;
+                        print_json(&json!({
+                            "output": output,
+                            "evidence_items": report.evidence_items,
+                            "candidates": report.candidates,
+                            "bundles": report.bundles.len(),
+                            "stdout_sha256": report.stdout_sha256,
+                            "duration_ms": report.duration_ms,
                         }))
                     }
                     None => print_json(&report),
@@ -5720,6 +5790,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "team session authorization",
             "secure device pairing",
             "signed policy rule pack",
+            "evidence-bound ai runner",
             "quorum registry enrollment",
             "worker watchdog recovery",
             "peer worker service health audit",
@@ -5815,6 +5886,8 @@ try {{
     $payload = Join-Path $Run 'payload.json'
     $dispatchPayload = Join-Path $Run 'dispatch-payload.json'
     $evidence = Join-Path $Run 'evidence.json'
+    $aiRunnerScript = Join-Path $Run 'ai-runner.ps1'
+    $aiBundles = Join-Path $Run 'ai-bundles.json'
     $bundle = Join-Path $Run 'close-bundle.json'
     $draft = Join-Path $Run 'draft.json'
     $approvals = Join-Path $Run 'approvals.agl'
@@ -5880,6 +5953,12 @@ if (-not (Test-Path $State)) {{
 }}
 exit 0
 '@ | Set-Content -Encoding UTF8 $watchdogScript
+@'
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+if ($request.mission -ne 'flood-watch') {{ exit 11 }}
+if ($request.evidence.Count -lt 1) {{ exit 12 }}
+'[{{"action":"declare_incident","subject":"river-east","rationale":"Acceptance runner cited the provided sensor evidence.","confidence":0.89,"evidence_ids":["sensor-1"]}}]'
+'@ | Set-Content -Encoding UTF8 $aiRunnerScript
     '[{{"id":"sensor-1","source":"river-gauge","kind":"sensor","confidence":0.94,"digest":"sensor-digest","excerpt":"water=5.2"}}]' | Set-Content -Encoding UTF8 $evidence
     '{{"type":"Feature","id":"river-east","properties":{{"risk":"flood"}},"geometry":{{"type":"Point","coordinates":[72.2,31.2]}}}}' | Set-Content -Encoding UTF8 $geo
 
@@ -5967,6 +6046,10 @@ exit 0
     if ($mergeProofJson.output_valid -ne $true) {{ throw 'merge proof did not mark output valid' }}
     if ($mergeProofJson.replayed_events -ne 2) {{ throw "unexpected replayed events: $($mergeProofJson.replayed_events)" }}
     if ($mergeProofJson.merged_events -ne 3) {{ throw "unexpected merged events: $($mergeProofJson.merged_events)" }}
+    Invoke-AstraGrid recommend ai-run --mission flood-watch --evidence $evidence --command powershell --arg -NoProfile --arg -ExecutionPolicy --arg Bypass --arg -File --arg $aiRunnerScript --timeout-ms 5000 --max-stdout-bytes 8192 --output $aiBundles
+    $aiBundleJson = Get-Content -Raw $aiBundles | ConvertFrom-Json
+    if ($aiBundleJson.Count -ne 1) {{ throw "unexpected ai bundle count: $($aiBundleJson.Count)" }}
+    if ($aiBundleJson[0].recommendation.evidence_ids[0] -ne 'sensor-1') {{ throw 'ai runner did not cite provided evidence' }}
     Invoke-AstraGrid evidence build --mission flood-watch --evidence $evidence --action close_incident --subject river-east --rationale 'Water receded below incident threshold.' --confidence 0.91 --evidence-id sensor-1 --output $bundle
     Invoke-AstraGrid workflow draft --ledger $ledger --bundle $bundle --actor lead --role incident_commander --min-confidence 0.75 --output $draft
     $approval = Invoke-AstraGridJson approval submit --queue $approvals --draft $draft --requested-by acceptance
@@ -8769,6 +8852,69 @@ mod tests {
                 assert_eq!(mission, "mission-alpha");
                 assert_eq!(evidence, PathBuf::from("evidence.json"));
                 assert_eq!(candidates, PathBuf::from("model-candidates.json"));
+                assert_eq!(output, Some(PathBuf::from("bundles.json")));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_recommend_ai_run_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "recommend",
+            "ai-run",
+            "--mission",
+            "mission-alpha",
+            "--evidence",
+            "evidence.json",
+            "--command",
+            "runner.exe",
+            "--arg",
+            "--strict",
+            "--working-directory",
+            "runners",
+            "--timeout-ms",
+            "900",
+            "--max-stdout-bytes",
+            "2048",
+            "--max-stderr-bytes",
+            "1024",
+            "--clear-environment",
+            "--instructions",
+            "cite evidence only",
+            "--output",
+            "bundles.json",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Recommend {
+                command:
+                    RecommendCommands::AiRun {
+                        mission,
+                        evidence,
+                        command,
+                        args,
+                        working_directory,
+                        timeout_ms,
+                        max_stdout_bytes,
+                        max_stderr_bytes,
+                        clear_environment,
+                        instructions,
+                        output,
+                    },
+            } => {
+                assert_eq!(mission, "mission-alpha");
+                assert_eq!(evidence, PathBuf::from("evidence.json"));
+                assert_eq!(command, PathBuf::from("runner.exe"));
+                assert_eq!(args, vec!["--strict"]);
+                assert_eq!(working_directory, Some(PathBuf::from("runners")));
+                assert_eq!(timeout_ms, 900);
+                assert_eq!(max_stdout_bytes, 2048);
+                assert_eq!(max_stderr_bytes, 1024);
+                assert!(clear_environment);
+                assert_eq!(instructions.as_deref(), Some("cite evidence only"));
                 assert_eq!(output, Some(PathBuf::from("bundles.json")));
             }
             other => panic!("unexpected command parsed: {other:?}"),

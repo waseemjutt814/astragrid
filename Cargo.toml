@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/astragrid-cli",
+    "crates/astragrid-ai",
     "crates/astragrid-approvals",
     "crates/astragrid-core",
     "crates/astragrid-crypto",

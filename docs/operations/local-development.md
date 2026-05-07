@@ -126,6 +126,8 @@ cargo run -q -p astragrid -- verify --ledger $mergeOutput
 $rules = ".cache\recommend-rules-$id.json"
 $readings = ".cache\recommend-readings-$id.json"
 $recommendOut = ".cache\recommend-bundles-$id.json"
+$aiRunner = ".cache\ai-runner-$id.ps1"
+$aiBundles = ".cache\ai-bundles-$id.json"
 @"
 [
   {
@@ -155,6 +157,11 @@ $recommendOut = ".cache\recommend-bundles-$id.json"
   }
 ]
 "@ | Set-Content -Encoding UTF8 $readings
+@'
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+if ($request.evidence.Count -lt 1) { exit 12 }
+'[{"action":"declare_incident","subject":"river-east","rationale":"Local runner cited the supplied evidence.","confidence":0.89,"evidence_ids":["sensor-1"]}]'
+'@ | Set-Content -Encoding UTF8 $aiRunner
 cargo run -q -p astragrid -- recommend rules --rules $rules --readings $readings --output $recommendOut
 ```
 
@@ -174,6 +181,7 @@ $modelCandidates = ".cache\model-candidates-$id.json"
 ]
 "@ | Set-Content -Encoding UTF8 $modelCandidates
 cargo run -q -p astragrid -- recommend model-output --mission flood-watch --evidence $evidence --candidates $modelCandidates --output ".cache\model-bundles-$id.json"
+cargo run -q -p astragrid -- recommend ai-run --mission flood-watch --evidence $evidence --command powershell --arg -NoProfile --arg -ExecutionPolicy --arg Bypass --arg -File --arg $aiRunner --timeout-ms 5000 --max-stdout-bytes 8192 --output $aiBundles
 ```
 
 ## Durable Peer Queue Smoke Test

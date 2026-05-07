@@ -56,6 +56,9 @@ gated until those inputs exist.
 - **Divergent ledger merge proof:** `sync merge` writes a separate verified output ledger,
   preserves append-only histories without rehashing, replays divergent branch suffixes
   deterministically, and emits source-to-merged hash proof.
+- **Evidence-bound AI runner:** `astragrid-ai` runs a configured local executable without shell
+  interpolation, feeds it mission/evidence JSON on stdin, enforces timeout/output caps, and accepts
+  only structured recommendations that cite known evidence ids.
 
 ## A-to-Z Delivery Gates
 
@@ -81,7 +84,7 @@ gated until those inputs exist.
 | R | Replication daemon with service hardening | Complete for local peer queue replication: `peer-queue worker` runs finite or daemon cycles, supports signed peer identities, writes optional health JSON and JSONL audit records, exposes stale retry thresholds, and supervisor kits render the health/audit contract into systemd and Windows service commands. Multi-host deployment drills remain gated. |
 | S | Secure device pairing | Complete for local signed pairing grants: pairing bundles bind device id/name, operator identity, registry digest, expiry, and signature. Network UX and revocation distribution remain future service work. |
 | T | Team roles and permissions | Complete for the team-authenticated signed append path: sessions verify registry status and policy before mutation. Broader service/API command enforcement remains gated on the long-running service boundary. |
-| U | `astragrid-ai` evidence-bound runner crate | Deterministic and structured recommendation paths exist; runner crate needs sandboxed execution and citation enforcement. |
+| U | `astragrid-ai` evidence-bound runner crate | Complete for local bounded runners: `recommend ai-run` executes a configured process without shell interpolation, sends schema-versioned evidence input on stdin, enforces timeout and output limits, rejects failed/invalid output, and emits only citation-valid evidence bundles. OS-level sandbox profiles remain future hardening. |
 | V | Visual dashboard app | Dashboard HTML exists; native/web app waits for storage budget and real runtime choice. |
 | W | Worker watchdog with live service recovery | Complete for local process recovery: `supervisor watchdog-run` spawns the configured worker without shell interpolation, audits each attempt, restarts within a capped budget, reports recovered/failed state, and has executable restart/failure tests. OS service manager health integration remains deployment work. |
 | X | Cross-platform release matrix | CI covers Windows/Linux/macOS; release packages need platform-specific artifact creation. |

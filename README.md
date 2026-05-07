@@ -42,6 +42,7 @@ and a CLI.
 - Evidence bundles with cited evidence ids, confidence checks, and bundle hashes.
 - Deterministic recommendation rules that emit verified evidence bundles.
 - Structured model recommendation adapter that only emits verified evidence bundles.
+- Bounded local AI runner that sends evidence JSON over stdin and accepts only citation-valid recommendation bundles.
 - Authenticated one-shot TCP peer ledger snapshots.
 - Hardened authenticated federation daemon with optional signed peer registry authorization, health JSON, and JSONL audit.
 - Multi-peer sync planning from a peer manifest.
@@ -121,6 +122,7 @@ AstraGrid is built around four non-negotiables:
 ## Repository Map
 
 - `crates/astragrid-core`: mission event types, policy, and ledger implementation.
+- `crates/astragrid-ai`: bounded local evidence-bound runner for structured recommendations.
 - `crates/astragrid-approvals`: hash-chained workflow approval queue.
 - `crates/astragrid-cli`: operator-facing CLI for local mission ledgers.
 - `crates/astragrid-dashboard`: self-contained operator dashboard export.
@@ -149,4 +151,4 @@ AstraGrid is built around four non-negotiables:
 
 See `docs/roadmap.md` for the completed phase checklist and `docs/a-to-z-master-plan.md` for
 the no-fake capability gates. See `docs/operations/ready-to-use-runbook.md` for the operator
-first-run, backup, restore, rotation, vault, and failure workflows.
+first-run, backup, restore, rotation, vault, merge, AI runner, and failure workflows.

@@ -206,6 +206,13 @@ The structured model adapter accepts candidate recommendations only as JSON obje
 existing evidence ids. Unknown citations, invalid confidence values, or empty rationales are
 rejected before an `EvidenceBundle` is written.
 
+`astragrid-ai` adds the bounded local runner boundary for model-like tools. `recommend ai-run`
+starts a configured executable directly without shell interpolation, sends a schema-versioned
+mission and evidence request on stdin, enforces timeout and stdout/stderr byte limits, parses only
+structured candidates, and then reuses the evidence-bundle validator. A runner that cites unknown
+evidence, emits invalid JSON, exceeds limits, or exits unsuccessfully produces no bundle. This is a
+process boundary for local tools, not a claim of OS-level sandboxing.
+
 ## Offline Sync
 
 `astragrid-sync` compares two verified ledgers. It reports whether ledgers are identical,
@@ -392,4 +399,3 @@ quorum, policy, or doctor checks do not pass.
 Future crates should be added only when they have executable behavior:
 
 - `astragrid-ui`: mission map and operator console.
-- `astragrid-ai`: evidence-bound recommendation runner.

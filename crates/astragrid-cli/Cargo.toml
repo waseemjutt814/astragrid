@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+astragrid-ai = { path = "../astragrid-ai" }
 astragrid-approvals = { path = "../astragrid-approvals" }
 astragrid-core = { path = "../astragrid-core" }
 astragrid-crypto = { path = "../astragrid-crypto" }
