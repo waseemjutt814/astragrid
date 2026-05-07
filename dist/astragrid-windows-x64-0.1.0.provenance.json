@@ -3,14 +3,14 @@
     "package":  "astragrid",
     "version":  "0.1.0",
     "target":  "windows-x64",
-    "generated_at":  "2026-05-07T21:40:24.8455985Z",
+    "generated_at":  "2026-05-07T22:07:56.1142278Z",
     "artifact":  {
                      "path":  "astragrid-windows-x64-0.1.0.zip",
-                     "sha256":  "cac4a52fb2e0e9280965fb5ad6ceac408cccb0fe4e5fcc80047f8837ea4e09bf"
+                     "sha256":  "3acf7377f5c8516cfc40904751d0d27d03ae0576a3c23b0a3f746f4fa3513716"
                  },
     "binary":  {
                    "path":  "..\\target\\release\\astragrid.exe",
-                   "sha256":  "cc060eb986fe72096465a6b44191f33c072e1749bfdd555c7795a56c2421bff2"
+                   "sha256":  "9bfa9e9f260298bfa2d85c57682d58c98b86e35735134b3c479ab0694c86beb4"
                },
     "included_files":  [
                            "target\\release\\astragrid.exe",
@@ -27,7 +27,7 @@
                       "rustc":  "rustc 1.94.1 (e408947bf 2026-03-25)"
                   },
     "git":  {
-                "commit":  "2165a822c7fe39483decb516e9363b4b9e0fec74",
+                "commit":  "12ab6fc6913b56f54ee8f01496da77a5c23f6cd2",
                 "dirty":  false
             }
 }
