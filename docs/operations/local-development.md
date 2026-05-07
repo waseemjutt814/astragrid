@@ -378,6 +378,11 @@ $server = Start-Job -ScriptBlock { param($ledger, $db) cargo run -q -p astragrid
 Start-Sleep -Seconds 2
 Invoke-WebRequest http://127.0.0.1:17880/dashboard.html | Select-Object -ExpandProperty StatusCode
 Receive-Job $server -Wait
+$uiServer = Start-Job -ScriptBlock { param($ledger, $db, $approvals) cargo run -q -p astragrid -- ui serve --ledger $ledger --db $db --approvals $approvals --bind 127.0.0.1:17882 --refresh-seconds 0 --max-requests 2 } -ArgumentList $ledger, $db, $approvals
+Start-Sleep -Seconds 2
+Invoke-RestMethod http://127.0.0.1:17882/api/summary
+Invoke-WebRequest http://127.0.0.1:17882/console.html | Select-Object -ExpandProperty StatusCode
+Receive-Job $uiServer -Wait
 cargo run -q -p astragrid -- doctor workspace --ledger $ledger --db $db --identity $key --approvals $approvals --peer-queue $peerQueue
 cargo run -q -p astragrid -- ops readiness-gate --ledger $ledger --db $db --identity $key --approvals $approvals --peer-queue $peerQueue --cycles 1 --output ".cache\readiness-$id.json"
 ```

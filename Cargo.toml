@@ -24,6 +24,7 @@ members = [
     "crates/astragrid-supervisor",
     "crates/astragrid-sync",
     "crates/astragrid-sync-queue",
+    "crates/astragrid-ui",
     "crates/astragrid-workflow",
 ]
 

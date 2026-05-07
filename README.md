@@ -7,8 +7,9 @@ encrypted local signing identities, trusted operator registry, SQLite indexing, 
 ingestion, evidence bundles, authenticated peer snapshots, offline sync planning and deterministic
 divergent-ledger merge proofing, encrypted
 artifact sealing, materialized mission state, report export, packaging scripts, approval-gated
-workflow execution, executable acceptance scenarios, operator dashboard export, workspace doctor,
-admission policy checks, signed local team sessions, secure device pairing grants,
+workflow execution, executable acceptance scenarios, operator dashboard export, API-backed
+loopback operator console, workspace doctor, admission policy checks, signed local team sessions,
+secure device pairing grants,
 quorum-governed registry changes, signed policy rule packs, evidence-to-command workflow drafting,
 and a CLI.
 
@@ -61,6 +62,7 @@ and a CLI.
 - Self-contained operator dashboard export with peer health status, recent errors, and map links.
 - Operator audit timeline in dashboard exports, grouped from mission events, approvals, peer sync jobs, and evidence bundles.
 - Loopback dashboard serving that regenerates verified dashboard HTML for each request.
+- API-backed loopback operator console with summary, events, approvals, audit, peer-health, and full dashboard JSON endpoints.
 - Workspace doctor for ledger, state, store, key, approval, and peer queue checks.
 - Release doctor for package provenance, detached signature, and quorum readiness checks.
 - Release custody policy verification for required signer ids, allowed signer sets, clean Git state, and promotion thresholds.
@@ -84,7 +86,7 @@ and a CLI.
 - Federation daemon service kits with generated install and uninstall wrappers.
 - Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.
-- `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `policy-pack`, `identity`, `team`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
+- `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `policy-pack`, `identity`, `team`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ui`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
 - GitHub Actions CI for formatting, linting, tests, build, and docs.
 - Release packaging emits SHA-256 provenance JSON and includes Windows launch/smoke helpers.
 
@@ -143,6 +145,7 @@ AstraGrid is built around four non-negotiables:
 - `crates/astragrid-supervisor`: service manager artifacts for peer workers and federation daemons.
 - `crates/astragrid-sync`: offline ledger comparison, append-only apply, and divergent-ledger merge proofing.
 - `crates/astragrid-sync-queue`: durable peer sync queue and retry worker.
+- `crates/astragrid-ui`: API-backed loopback operator console renderer and route layer.
 - `crates/astragrid-workflow`: evidence-to-command workflow drafting.
 - `docs/`: architecture, operations, security, and ADRs.
 - `tools/local/`: local workstation helper scripts.
@@ -151,4 +154,4 @@ AstraGrid is built around four non-negotiables:
 
 See `docs/roadmap.md` for the completed phase checklist and `docs/a-to-z-master-plan.md` for
 the no-fake capability gates. See `docs/operations/ready-to-use-runbook.md` for the operator
-first-run, backup, restore, rotation, vault, merge, AI runner, and failure workflows.
+first-run, backup, restore, rotation, vault, merge, operator console, AI runner, and failure workflows.

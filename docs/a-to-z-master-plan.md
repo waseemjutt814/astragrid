@@ -59,6 +59,8 @@ gated until those inputs exist.
 - **Evidence-bound AI runner:** `astragrid-ai` runs a configured local executable without shell
   interpolation, feeds it mission/evidence JSON on stdin, enforces timeout/output caps, and accepts
   only structured recommendations that cite known evidence ids.
+- **API-backed operator console:** `astragrid-ui` and `ui serve` expose a loopback visual console
+  plus read-only JSON endpoints derived from the same verified dashboard document used by exports.
 
 ## A-to-Z Delivery Gates
 
@@ -70,7 +72,7 @@ gated until those inputs exist.
 | D | Encrypted ledgers at rest | Complete for the vault runtime path: `vault init`, `vault append`, `vault verify`, and `vault tail` operate on a sealed ledger file as the primary at-rest artifact. Signed vault append remains a future hardening item. |
 | E | Automatic conflict merge for divergent ledgers | Complete for local files: `sync merge` preserves the common prefix, deterministically replays divergent branch suffixes into a new verified output ledger, refuses to overwrite outputs unless requested, and emits proof mapping source hashes to merged hashes. Multi-host conflict drills remain gated. |
 | F | Long-running secure network service | Complete for local authenticated snapshot serving: `net serve-daemon` verifies the ledger before bind, serves authenticated peers through the real protocol, can require active registry-enrolled signed peer identities, isolates failed peer requests, writes health/audit files, supports finite smoke runs, and has executable daemon tests. Systemd and Windows service kits now render real daemon install/uninstall artifacts. Multi-host deployment hardening remains future work. |
-| G | `astragrid-ui` operator console | HTML exports and loopback serving exist; full app waits for a real UI runtime without heavy placeholder dependencies. |
+| G | `astragrid-ui` operator console | Complete for local operation: `ui serve` rebuilds verified dashboard state per request, serves a visual console over loopback, and exposes read-only JSON endpoints for summary, events, approvals, audit timeline, peer health, full dashboard data, and health. |
 | H | Hardware-backed keys | OS key sealing exists; TPM/YubiKey completion needs real hardware provider implementations and operator tests. |
 | I | Windows installer and package smoke | Current wave adds script installer, packaged installer, manifest, and smoke automation; MSI/winget/Scoop require release-channel decisions. |
 | J | Signed release notarization | Release custody signatures exist; notarization needs real code-signing/notary credentials. |
@@ -78,14 +80,14 @@ gated until those inputs exist.
 | L | Remote update channel | Not started until signed update metadata and hosting are available. |
 | M | Multi-host federation beyond bundle import | Trust bundles and peer sync exist; federation daemon needs multi-node integration tests. |
 | N | Offline map tile packs | Map export exists; tile packs need a licensed tile source and pack manifest validation. |
-| O | Operator audit timeline UI | Complete for dashboard exports: the dashboard derives a real audit timeline from loaded mission events, approvals, peer sync jobs, and evidence bundles, renders severity/source/actor/subject/detail/reference, and has export coverage. Interactive drill-down remains part of the future full UI app. |
+| O | Operator audit timeline UI | Complete for local operation: dashboard exports render the deterministic audit timeline, and the loopback operator console exposes it through `/api/audit` with a visual tab backed by the same verified document. |
 | P | Policy rule pack system | Complete for local operation: policy packs validate schema/compatibility/rules, detached signatures bind the pack digest, registry checks verify active signer authority, and append paths can enforce a verified pack. |
 | Q | Quorum enrollment for operators | Complete for local registry changes: proposals bind authority, current registry digest, nonce, change body, and required approval count; verification requires distinct active commander signatures, rejects duplicates/revoked signers/stale registries, and apply mutates only after verification. Remote CA-backed enrollment remains gated. |
 | R | Replication daemon with service hardening | Complete for local peer queue replication: `peer-queue worker` runs finite or daemon cycles, supports signed peer identities, writes optional health JSON and JSONL audit records, exposes stale retry thresholds, and supervisor kits render the health/audit contract into systemd and Windows service commands. Multi-host deployment drills remain gated. |
 | S | Secure device pairing | Complete for local signed pairing grants: pairing bundles bind device id/name, operator identity, registry digest, expiry, and signature. Network UX and revocation distribution remain future service work. |
 | T | Team roles and permissions | Complete for the team-authenticated signed append path: sessions verify registry status and policy before mutation. Broader service/API command enforcement remains gated on the long-running service boundary. |
 | U | `astragrid-ai` evidence-bound runner crate | Complete for local bounded runners: `recommend ai-run` executes a configured process without shell interpolation, sends schema-versioned evidence input on stdin, enforces timeout and output limits, rejects failed/invalid output, and emits only citation-valid evidence bundles. OS-level sandbox profiles remain future hardening. |
-| V | Visual dashboard app | Dashboard HTML exists; native/web app waits for storage budget and real runtime choice. |
+| V | Visual dashboard app | Complete for lightweight local use: the visual operator console is served by the Rust binary, fetches real local JSON endpoints, and avoids heavy app dependencies until a signed native runtime is justified. |
 | W | Worker watchdog with live service recovery | Complete for local process recovery: `supervisor watchdog-run` spawns the configured worker without shell interpolation, audits each attempt, restarts within a capped budget, reports recovered/failed state, and has executable restart/failure tests. OS service manager health integration remains deployment work. |
 | X | Cross-platform release matrix | CI covers Windows/Linux/macOS; release packages need platform-specific artifact creation. |
 | Y | Field deployment runbooks | Local ready-to-use runbook exists for install, first-run setup, backup, restore, rotation, vault use, update checks, and failure handling. Real site-specific drills remain gated. |

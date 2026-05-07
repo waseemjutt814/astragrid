@@ -334,6 +334,16 @@ surfaces queue health as a status banner, and does not require a web server. `da
 binds to a requested address, defaults to loopback, regenerates the same verified dashboard for
 each request, and injects browser refresh metadata without changing offline export behavior.
 
+## Operator Console
+
+`astragrid-ui` builds on the dashboard document and serves a lightweight loopback operator console
+without introducing a placeholder web stack. `ui serve` binds to the requested address, defaults to
+loopback, rebuilds the verified dashboard document for each request, and routes the same in-memory
+document through `/console.html`, `/api/summary`, `/api/events`, `/api/approvals`, `/api/audit`,
+`/api/peer-health`, `/api/dashboard`, and `/healthz`. The browser app fetches those local endpoints
+to render metrics, tabs, audit rows, and peer health. The console is read-only; writes still happen
+through the signed CLI workflows.
+
 ## Operator Handoff Bundle
 
 `setup first-run` creates a ready local workspace: directories, encrypted operator key, passphrase
@@ -348,8 +358,8 @@ operator without embedding local workstation paths.
 
 `ops acceptance-pack` writes a runnable PowerShell acceptance pack. The pack exercises identity
 creation, registry enrollment, signed append, evidence build, workflow draft, approval append,
-store ingest, dashboard export, ops bundle, scenario run, doctor, and optional package provenance
-verification through the same CLI used by operators.
+store ingest, dashboard export, operator console API smoke, ops bundle, scenario run, doctor, and
+optional package provenance verification through the same CLI used by operators.
 
 `ops release-evidence-pack` writes a compact handoff folder for signed release custody artifacts.
 It requires a healthy release doctor, writes the doctor report, emits `checksums.sha256`, and
@@ -396,6 +406,7 @@ quorum, policy, or doctor checks do not pass.
 
 ## Future System Shape
 
-Future crates should be added only when they have executable behavior:
+Future runtime surfaces should be added only when they have executable behavior:
 
-- `astragrid-ui`: mission map and operator console.
+- Signed native UI shells only after the Rust loopback console has a real packaging and update
+  boundary.

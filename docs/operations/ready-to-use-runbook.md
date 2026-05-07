@@ -84,6 +84,25 @@ Enforce the verified pack on team-authenticated mutation:
 .\target\release\astragrid.exe team append --ledger ops\field\data\mission.agl --identity ops\field\data\operators\lead.agkey --passphrase-file ops\field\data\operators\lead.pass --registry ops\field\data\operators\operators.agregistry --session ops\field\data\operators\lead.session.json --policy-pack ops\field\data\field-safety.policy.json --policy-signature ops\field\data\field-safety.policy.sig.json --action dispatch_team --subject river-east --priority elevated --payload '{"team_id":"alpha"}'
 ```
 
+## Operator Console
+
+Serve the read-only local console from verified workspace artifacts:
+
+```powershell
+.\target\release\astragrid.exe store ingest --ledger ops\field\data\mission.agl --db ops\field\data\mission.db
+.\target\release\astragrid.exe ui serve --ledger ops\field\data\mission.agl --db ops\field\data\mission.db --approvals ops\field\data\approvals.agl --bind 127.0.0.1:17882
+```
+
+The app is available at `http://127.0.0.1:17882/console.html`. Smoke the API without a browser:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:17882/api/summary
+Invoke-WebRequest http://127.0.0.1:17882/console.html | Select-Object -ExpandProperty StatusCode
+```
+
+The console is read-only. Mission changes still go through signed CLI commands, approvals, policy
+packs, and registry checks.
+
 ## Backup
 
 ```powershell
@@ -254,5 +273,7 @@ Delete only after reviewing the report:
   supplied.
 - AI runner failure: `recommend ai-run` writes no bundle when the runner exits unsuccessfully,
   times out, exceeds output limits, or cites unknown evidence.
+- Operator console failure: `ui serve` fails before binding when the ledger, store, approvals, peer
+  queue, or evidence inputs cannot be verified or loaded.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

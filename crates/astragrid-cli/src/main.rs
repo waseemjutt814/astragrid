@@ -53,6 +53,7 @@ use astragrid_sync_queue::{
     PeerSyncQueue, ProcessOutcome, QueueHealthSnapshot, QueueHealthStatus, QueueProcessOptions,
     QueueProcessResult, QueueStatus,
 };
+use astragrid_ui::route_operator_console;
 use astragrid_workflow::{CommandDraft, WorkflowPlanner, actor_from_parts};
 use clap::{Parser, Subcommand, ValueEnum};
 use rand_core::{OsRng, RngCore};
@@ -286,6 +287,11 @@ enum Commands {
     Dashboard {
         #[command(subcommand)]
         command: DashboardCommands,
+    },
+    /// Serve a visual API-backed operator console over loopback.
+    Ui {
+        #[command(subcommand)]
+        command: UiCommands,
     },
     /// Build operator handoff bundles from verified local artifacts.
     Ops {
@@ -1186,6 +1192,34 @@ enum DashboardCommands {
         #[arg(long, default_value = "127.0.0.1:17880")]
         bind: String,
         #[arg(long, default_value = "AstraGrid Mission Dashboard")]
+        title: String,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        approvals: Option<PathBuf>,
+        #[arg(long)]
+        peer_queue: Option<PathBuf>,
+        #[arg(long)]
+        evidence_bundle: Vec<PathBuf>,
+        #[arg(long)]
+        map_href: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        refresh_seconds: u64,
+        /// Optional finite request count for smoke tests and supervised runs.
+        #[arg(long)]
+        max_requests: Option<u32>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum UiCommands {
+    /// Serve the API-backed operator console over loopback.
+    Serve {
+        #[arg(long, default_value = "data/mission.agl")]
+        ledger: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:17882")]
+        bind: String,
+        #[arg(long, default_value = "AstraGrid Operator Console")]
         title: String,
         #[arg(long)]
         db: Option<PathBuf>,
@@ -3023,6 +3057,31 @@ fn main() -> Result<()> {
                 max_requests,
             })?),
         },
+        Commands::Ui { command } => match command {
+            UiCommands::Serve {
+                ledger,
+                bind,
+                title,
+                db,
+                approvals,
+                peer_queue,
+                evidence_bundle,
+                map_href,
+                refresh_seconds,
+                max_requests,
+            } => print_json(&serve_operator_console(UiServeRequest {
+                ledger,
+                bind,
+                title,
+                db,
+                approvals,
+                peer_queue,
+                evidence_bundle,
+                map_href,
+                refresh_seconds,
+                max_requests,
+            })?),
+        },
         Commands::Ops { command } => match command {
             OpsCommands::Bundle {
                 ledger,
@@ -3690,6 +3749,19 @@ struct FirstRunRequest {
 }
 
 struct DashboardServeRequest {
+    ledger: PathBuf,
+    bind: String,
+    title: String,
+    db: Option<PathBuf>,
+    approvals: Option<PathBuf>,
+    peer_queue: Option<PathBuf>,
+    evidence_bundle: Vec<PathBuf>,
+    map_href: Option<String>,
+    refresh_seconds: u64,
+    max_requests: Option<u32>,
+}
+
+struct UiServeRequest {
     ledger: PathBuf,
     bind: String,
     title: String,
@@ -4619,6 +4691,55 @@ fn handle_dashboard_stream(request: &DashboardServeRequest, stream: &mut TcpStre
         ),
         _ => http_response("404 Not Found", "text/plain; charset=utf-8", b"not found\n"),
     };
+    stream.write_all(&response)?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn serve_operator_console(request: UiServeRequest) -> Result<Value> {
+    let listener = TcpListener::bind(&request.bind)
+        .with_context(|| format!("failed to bind operator console server to {}", request.bind))?;
+    let local_addr = listener.local_addr()?;
+    eprintln!("AstraGrid operator console serving at http://{local_addr}/console.html");
+    let mut served = 0_u32;
+    loop {
+        let (mut stream, _) = listener.accept()?;
+        handle_operator_console_stream(&request, &mut stream)?;
+        served += 1;
+        if request
+            .max_requests
+            .is_some_and(|max_requests| served >= max_requests)
+        {
+            break;
+        }
+    }
+    Ok(json!({
+        "bind": local_addr.to_string(),
+        "requests": served,
+    }))
+}
+
+fn handle_operator_console_stream(request: &UiServeRequest, stream: &mut TcpStream) -> Result<()> {
+    stream.set_read_timeout(Some(StdDuration::from_secs(5)))?;
+    let mut buffer = [0_u8; 4096];
+    let read = stream.read(&mut buffer)?;
+    let request_text = String::from_utf8_lossy(&buffer[..read]);
+    let path = http_request_path(&request_text).unwrap_or("/");
+    let dashboard = build_dashboard_document(
+        &request.ledger,
+        request.title.clone(),
+        request.approvals.clone(),
+        request.db.clone(),
+        request.peer_queue.clone(),
+        &request.evidence_bundle,
+        request.map_href.clone(),
+    )?;
+    let console_response = route_operator_console(&dashboard, path, request.refresh_seconds)?;
+    let response = http_response(
+        console_response.status,
+        console_response.content_type,
+        &console_response.body,
+    );
     stream.write_all(&response)?;
     stream.flush()?;
     Ok(())
@@ -5928,6 +6049,8 @@ try {{
     $federationWindowsKit = Join-Path $Run 'federation-windows-kit'
     $federationPort = Get-Random -Minimum 20000 -Maximum 30000
     $federationBind = "127.0.0.1:$federationPort"
+    $operatorConsolePort = Get-Random -Minimum 30001 -Maximum 40000
+    $operatorConsoleBind = "127.0.0.1:$operatorConsolePort"
     $mergeLeft = Join-Path $Run 'merge-left.agl'
     $mergeRight = Join-Path $Run 'merge-right.agl'
     $mergeOutput = Join-Path $Run 'merge-output.agl'
@@ -6060,6 +6183,28 @@ if ($request.evidence.Count -lt 1) {{ exit 12 }}
     Invoke-AstraGrid geo ingest --input $geo --output $features
     Invoke-AstraGrid dashboard export --ledger $ledger --db $db --approvals $approvals --output $dashboard --title {quoted_title}
     if (-not (Select-String -LiteralPath $dashboard -Pattern 'Operator Audit Timeline' -Quiet)) {{ throw 'dashboard audit timeline missing' }}
+    $operatorConsoleServer = Start-Job -ScriptBlock {{
+        param($ProjectRoot, $Bind, $Ledger, $Db, $Approvals, $Title)
+        Set-Location $ProjectRoot
+        $operatorOutput = cargo run -q -p astragrid -- ui serve --bind $Bind --ledger $Ledger --db $Db --approvals $Approvals --title $Title --max-requests 2 --refresh-seconds 0 2>&1
+        if ($LASTEXITCODE -ne 0) {{ throw "operator console exited with code $LASTEXITCODE`: $operatorOutput" }}
+    }} -ArgumentList $ProjectRoot, $operatorConsoleBind, $ledger, $db, $approvals, {quoted_title}
+    $operatorConsoleDeadline = (Get-Date).AddSeconds(30)
+    while ($true) {{
+        try {{
+            $operatorSummary = Invoke-RestMethod -Uri "http://$operatorConsoleBind/api/summary" -TimeoutSec 2
+            break
+        }} catch {{
+            if ((Get-Date) -gt $operatorConsoleDeadline) {{ throw "operator console summary API did not respond: $($_.Exception.Message)" }}
+            Start-Sleep -Milliseconds 250
+        }}
+    }}
+    if ($operatorSummary.healthy -ne $true) {{ throw 'operator console summary did not report healthy state' }}
+    if ($operatorSummary.events -lt 3) {{ throw "operator console summary event count too low: $($operatorSummary.events)" }}
+    if ($operatorSummary.audit_items -lt 1) {{ throw 'operator console summary did not expose audit timeline count' }}
+    $operatorConsoleHtml = Invoke-WebRequest -Uri "http://$operatorConsoleBind/console.html" -UseBasicParsing -TimeoutSec 5
+    if ($operatorConsoleHtml.Content -notmatch 'operator-console') {{ throw 'operator console HTML app shell missing' }}
+    Receive-Job $operatorConsoleServer -Wait -ErrorAction Stop
     Invoke-AstraGrid ops bundle --ledger $ledger --db $db --approvals $approvals --identity $identity --features $features --output-dir $opsBundle --title {quoted_title}
     Invoke-AstraGrid doctor workspace --ledger $ledger --db $db --identity $identity --approvals $approvals
     Invoke-AstraGrid scenario run --input $scenario --workdir $scenarioRun
@@ -7835,13 +7980,13 @@ mod tests {
         ReadinessGateRequest, RecommendCommands, RegistryQuorumChangeKind,
         RegistryQuorumProposalRequest, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
         RestoreRequest, RotateOperatorRequest, SetupCommands, SyncCommands, TeamAppendRequest,
-        TeamSessionIssueRequest, VaultAppendRequest, VaultCommands, WorkerWatchdogRequest,
-        WorkspaceProfile, acceptance_scenario, apply_registry_quorum_proposal,
-        authorize_team_action, build_registry_trust_bundle, create_device_pairing,
-        create_registry_quorum_proposal, default_signature_output_path, evaluate_policy_pack_file,
-        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
-        inject_meta_refresh, issue_team_session, read_json_file, read_payload,
-        render_acceptance_script, render_default_launcher, restore_workspace_backup,
+        TeamSessionIssueRequest, UiCommands, VaultAppendRequest, VaultCommands,
+        WorkerWatchdogRequest, WorkspaceProfile, acceptance_scenario,
+        apply_registry_quorum_proposal, authorize_team_action, build_registry_trust_bundle,
+        create_device_pairing, create_registry_quorum_proposal, default_signature_output_path,
+        evaluate_policy_pack_file, export_ops_bundle, http_request_path, http_response,
+        import_registry_trust_bundle, inject_meta_refresh, issue_team_session, read_json_file,
+        read_payload, render_acceptance_script, render_default_launcher, restore_workspace_backup,
         rotate_operator_key, run_artifact_retention, run_federation_daemon, run_first_run_setup,
         run_peer_queue_worker, run_profile_doctor, run_readiness_gate, run_worker_watchdog,
         sha256_file_hex, sign_registry_quorum_proposal, team_append_signed, vault_append,
@@ -9115,6 +9260,51 @@ mod tests {
                 assert_eq!(bind, "127.0.0.1:18080");
                 assert_eq!(refresh_seconds, 3);
                 assert_eq!(max_requests, Some(1));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_ui_serve_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "ui",
+            "serve",
+            "--ledger",
+            "data/mission.agl",
+            "--db",
+            "data/mission.db",
+            "--approvals",
+            "data/approvals.agl",
+            "--bind",
+            "127.0.0.1:18082",
+            "--refresh-seconds",
+            "2",
+            "--max-requests",
+            "2",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Ui {
+                command:
+                    UiCommands::Serve {
+                        ledger,
+                        db,
+                        approvals,
+                        bind,
+                        refresh_seconds,
+                        max_requests,
+                        ..
+                    },
+            } => {
+                assert_eq!(ledger, PathBuf::from("data/mission.agl"));
+                assert_eq!(db, Some(PathBuf::from("data/mission.db")));
+                assert_eq!(approvals, Some(PathBuf::from("data/approvals.agl")));
+                assert_eq!(bind, "127.0.0.1:18082");
+                assert_eq!(refresh_seconds, 2);
+                assert_eq!(max_requests, Some(2));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }

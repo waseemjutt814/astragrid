@@ -140,6 +140,7 @@ dependencies = [
  "astragrid-supervisor",
  "astragrid-sync",
  "astragrid-sync-queue",
+ "astragrid-ui",
  "astragrid-workflow",
  "clap",
  "hex",
@@ -442,6 +443,19 @@ dependencies = [
  "thiserror",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "astragrid-ui"
+version = "0.1.0"
+dependencies = [
+ "astragrid-approvals",
+ "astragrid-dashboard",
+ "astragrid-state",
+ "astragrid-sync-queue",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
