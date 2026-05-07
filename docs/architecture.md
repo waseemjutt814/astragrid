@@ -67,7 +67,8 @@ verification.
 For local operator workstations, passphrase files can be sealed into an OS-backed envelope and
 opened by signing commands with `--passphrase-os-key`. The current Windows provider uses DPAPI for
 the current user and fails closed on unsupported platforms instead of silently downgrading to a
-portable secret.
+portable secret. Provider behavior and expansion requirements are documented in
+`docs/security/operator-key-providers.md`.
 
 `identity audit` reports whether a key file is encrypted, whether plaintext private key material
 is present, and whether local file permissions can be verified as private. Unix key files are
@@ -207,7 +208,8 @@ surfaces queue health as a status banner, and does not require a web server.
 
 `astragrid-doctor` checks local artifact health without mutating them. It verifies the ledger,
 materializes state, checks optional store, key, approval, and peer queue inputs, and returns an
-overall healthy/warning/failed report.
+overall healthy/warning/failed report. `doctor release` verifies package provenance and optional
+signature or quorum custody before an artifact is shared.
 
 ## Future System Shape
 

@@ -20,4 +20,5 @@ stores query columns plus full event JSON.
 - Operator-facing commands can be cryptographically attributed.
 - Ledger tampering remains detectable through both signature and hash-chain checks.
 - SQLite improves query speed without becoming the authoritative event store.
-- Private key encryption is still future work and is documented as an explicit security gap.
+- Encrypted private key storage is covered by ADR 0004; operator-facing workflows should use
+  encrypted keys rather than plain bootstrap keys.

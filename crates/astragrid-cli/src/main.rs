@@ -11,7 +11,7 @@ use astragrid_core::{
 };
 use astragrid_crypto::SealedArtifact;
 use astragrid_dashboard::DashboardDocument;
-use astragrid_doctor::{DoctorInput, run_doctor};
+use astragrid_doctor::{DoctorInput, ReleaseDoctorInput, run_doctor, run_release_doctor};
 use astragrid_evidence::{EvidenceBundle, EvidenceItem, Recommendation};
 use astragrid_geo::GeoFeatureSet;
 use astragrid_harvest::{HarvestRequest, SourceProfile, harvest_geojson, harvest_profile};
@@ -698,6 +698,15 @@ enum DoctorCommands {
         approvals: Option<PathBuf>,
         #[arg(long)]
         peer_queue: Option<PathBuf>,
+    },
+    /// Check release package provenance, signatures, and quorum custody.
+    Release {
+        #[arg(long)]
+        provenance: PathBuf,
+        #[arg(long)]
+        signature: Vec<PathBuf>,
+        #[arg(long)]
+        quorum: Option<PathBuf>,
     },
 }
 
@@ -1733,6 +1742,15 @@ fn main() -> Result<()> {
                 approvals,
                 peer_queue,
             })),
+            DoctorCommands::Release {
+                provenance,
+                signature,
+                quorum,
+            } => print_json(&run_release_doctor(ReleaseDoctorInput {
+                provenance,
+                signatures: signature,
+                quorum,
+            })),
         },
         Commands::Provenance { command } => match command {
             ProvenanceCommands::Verify { input } => {
@@ -2139,8 +2157,9 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::{
-        Cli, Commands, DashboardCommands, GeoCommands, IdentityCommands, PeerQueueCommands,
-        ProvenanceCommands, RecommendCommands, default_signature_output_path, read_payload,
+        Cli, Commands, DashboardCommands, DoctorCommands, GeoCommands, IdentityCommands,
+        PeerQueueCommands, ProvenanceCommands, RecommendCommands, default_signature_output_path,
+        read_payload,
     };
 
     #[test]
@@ -2334,6 +2353,44 @@ mod tests {
                 assert_eq!(output, PathBuf::from("ops/dashboard.html"));
                 assert_eq!(peer_queue, Some(PathBuf::from("data/peer-sync.db")));
                 assert_eq!(map_href, Some("map-console.html".to_owned()));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_doctor_release_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "doctor",
+            "release",
+            "--provenance",
+            "dist/package.provenance.json",
+            "--signature",
+            "dist/package.provenance.sig.json",
+            "--quorum",
+            "dist/package.provenance.quorum.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Doctor {
+                command:
+                    DoctorCommands::Release {
+                        provenance,
+                        signature,
+                        quorum,
+                    },
+            } => {
+                assert_eq!(provenance, PathBuf::from("dist/package.provenance.json"));
+                assert_eq!(
+                    signature,
+                    vec![PathBuf::from("dist/package.provenance.sig.json")]
+                );
+                assert_eq!(
+                    quorum,
+                    Some(PathBuf::from("dist/package.provenance.quorum.json"))
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }

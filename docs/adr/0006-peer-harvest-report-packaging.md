@@ -22,8 +22,8 @@ Add:
 
 ## Consequences
 
-- Peer transport is real but intentionally one-shot; queueing and multi-peer service mode remain
-  future work.
+- Peer transport is real and intentionally simple. Durable queueing, worker loops, health
+  telemetry, and supervisor artifacts are now handled by later ADRs.
 - Harvesting validates GeoJSON through the same ingestion path and can avoid unnecessary network
   calls when a profile cache is present.
 - Reports, report bundles, and sealed artifacts are generated from verified local data.

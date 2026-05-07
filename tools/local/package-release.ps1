@@ -27,13 +27,6 @@ try {
         Where-Object { $_.name -eq "astragrid" } |
         Select-Object -First 1 -ExpandProperty version
 
-    $artifact = Join-Path $dist "astragrid-windows-x64-$version.zip"
-    if (Test-Path -LiteralPath $artifact) {
-        Remove-Item -LiteralPath $artifact -Force
-    }
-
-    Compress-Archive -Path $binary, "README.md", "SECURITY.md", "LICENSE" -DestinationPath $artifact
-
     $gitCommit = $null
     $gitDirty = $null
     try {
@@ -51,6 +44,13 @@ try {
     catch {
         $gitDirty = $null
     }
+
+    $artifact = Join-Path $dist "astragrid-windows-x64-$version.zip"
+    if (Test-Path -LiteralPath $artifact) {
+        Remove-Item -LiteralPath $artifact -Force
+    }
+
+    Compress-Archive -Path $binary, "README.md", "SECURITY.md", "LICENSE" -DestinationPath $artifact
 
     $provenancePath = Join-Path $dist "astragrid-windows-x64-$version.provenance.json"
     if (Test-Path -LiteralPath $provenancePath) {

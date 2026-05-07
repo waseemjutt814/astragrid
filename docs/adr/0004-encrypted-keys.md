@@ -19,4 +19,6 @@ without decrypting the private key. The private key can only be loaded with a pa
 
 - Wrong or missing passphrases fail closed.
 - CI and automation can use passphrase files without interactive prompts.
-- OS keychain and hardware-backed key storage remain future work.
+- Windows DPAPI passphrase envelopes are supported through the OS-key provider layer.
+- macOS Keychain, Linux Secret Service, and hardware-backed providers must follow
+  `docs/security/operator-key-providers.md` before being added.

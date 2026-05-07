@@ -1,19 +1,20 @@
 # AstraGrid Roadmap TODO
 
-This is the active build checklist for the five remaining high-value phases.
+This is the completed build checklist for the current high-value phases.
 
 ## Current Quality Gate
 
 - [x] Dashboard renders peer health, due work, stale retrying jobs, and recent peer errors.
 - [x] Dashboard export reports peer health fields in machine-readable CLI output.
 - [x] CLI parser coverage includes OS key, model adapter, map console, peer health, dashboard, and quorum commands.
+- [x] Release doctor verifies package provenance, optional signatures, and optional quorum custody.
 - [x] Run full format, lint, test, build, docs, package, and provenance verification gate.
 
 ## Phase 1: OS-Backed Operator Key Protection
 
 - [x] Add an OS-sealed passphrase envelope for supported platforms.
 - [x] Wire OS-sealed passphrases into signing commands.
-- [ ] Add operator docs for future keychain providers beyond Windows DPAPI.
+- [x] Add operator docs for provider expansion beyond Windows DPAPI.
 
 ## Phase 2: Evidence-Constrained Model Adapter
 

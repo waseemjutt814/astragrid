@@ -9,6 +9,7 @@ description.workspace = true
 [dependencies]
 astragrid-approvals = { path = "../astragrid-approvals" }
 astragrid-core = { path = "../astragrid-core" }
+astragrid-provenance = { path = "../astragrid-provenance" }
 astragrid-state = { path = "../astragrid-state" }
 astragrid-store = { path = "../astragrid-store" }
 astragrid-sync-queue = { path = "../astragrid-sync-queue" }
@@ -17,4 +18,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
+sha2.workspace = true
 tempfile.workspace = true

@@ -2,6 +2,9 @@ use std::path::PathBuf;
 
 use astragrid_approvals::ApprovalLog;
 use astragrid_core::{MissionLedger, OperatorKeypair};
+use astragrid_provenance::{
+    PackageProvenance, ProvenanceQuorumEnvelope, ProvenanceSignatureEnvelope,
+};
 use astragrid_state::MissionState;
 use astragrid_store::MissionStore;
 use astragrid_sync_queue::PeerSyncQueue;
@@ -15,6 +18,13 @@ pub struct DoctorInput {
     pub identities: Vec<PathBuf>,
     pub approvals: Option<PathBuf>,
     pub peer_queue: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseDoctorInput {
+    pub provenance: PathBuf,
+    pub signatures: Vec<PathBuf>,
+    pub quorum: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +73,24 @@ pub fn run_doctor(input: DoctorInput) -> DoctorReport {
     }
     if let Some(peer_queue) = input.peer_queue {
         check_peer_queue(peer_queue, &mut checks);
+    }
+    summarize(checks)
+}
+
+pub fn run_release_doctor(input: ReleaseDoctorInput) -> DoctorReport {
+    let mut checks = Vec::new();
+    check_package_provenance(input.provenance, &mut checks);
+    if input.signatures.is_empty() && input.quorum.is_none() {
+        checks.push(DoctorCheck::warning(
+            "release_custody",
+            json!({"warning": "no provenance signature or quorum was supplied"}),
+        ));
+    }
+    for signature in input.signatures {
+        check_provenance_signature(signature, &mut checks);
+    }
+    if let Some(quorum) = input.quorum {
+        check_provenance_quorum(quorum, &mut checks);
     }
     summarize(checks)
 }
@@ -212,6 +240,82 @@ fn check_peer_queue(peer_queue: PathBuf, checks: &mut Vec<DoctorCheck>) {
     }
 }
 
+fn check_package_provenance(provenance: PathBuf, checks: &mut Vec<DoctorCheck>) {
+    if !provenance.exists() {
+        checks.push(DoctorCheck::failed(
+            "release_provenance",
+            json!({"path": provenance, "error": "provenance file does not exist"}),
+        ));
+        return;
+    }
+    match PackageProvenance::load(&provenance)
+        .and_then(|package| package.verify_hashes(&provenance))
+    {
+        Ok(report) if report.valid => checks.push(DoctorCheck::ok(
+            "release_provenance",
+            json!({"path": provenance, "verification": report}),
+        )),
+        Ok(report) => checks.push(DoctorCheck::failed(
+            "release_provenance",
+            json!({"path": provenance, "verification": report}),
+        )),
+        Err(error) => checks.push(DoctorCheck::failed(
+            "release_provenance",
+            json!({"path": provenance, "error": error.to_string()}),
+        )),
+    }
+}
+
+fn check_provenance_signature(signature: PathBuf, checks: &mut Vec<DoctorCheck>) {
+    if !signature.exists() {
+        checks.push(DoctorCheck::failed(
+            "release_signature",
+            json!({"path": signature, "error": "signature file does not exist"}),
+        ));
+        return;
+    }
+    match ProvenanceSignatureEnvelope::load(&signature)
+        .and_then(|envelope| envelope.verify(&signature))
+    {
+        Ok(report) if report.valid => checks.push(DoctorCheck::ok(
+            "release_signature",
+            json!({"path": signature, "verification": report}),
+        )),
+        Ok(report) => checks.push(DoctorCheck::failed(
+            "release_signature",
+            json!({"path": signature, "verification": report}),
+        )),
+        Err(error) => checks.push(DoctorCheck::failed(
+            "release_signature",
+            json!({"path": signature, "error": error.to_string()}),
+        )),
+    }
+}
+
+fn check_provenance_quorum(quorum: PathBuf, checks: &mut Vec<DoctorCheck>) {
+    if !quorum.exists() {
+        checks.push(DoctorCheck::failed(
+            "release_quorum",
+            json!({"path": quorum, "error": "quorum file does not exist"}),
+        ));
+        return;
+    }
+    match ProvenanceQuorumEnvelope::load(&quorum).and_then(|envelope| envelope.verify(&quorum)) {
+        Ok(report) if report.valid => checks.push(DoctorCheck::ok(
+            "release_quorum",
+            json!({"path": quorum, "verification": report}),
+        )),
+        Ok(report) => checks.push(DoctorCheck::failed(
+            "release_quorum",
+            json!({"path": quorum, "verification": report}),
+        )),
+        Err(error) => checks.push(DoctorCheck::failed(
+            "release_quorum",
+            json!({"path": quorum, "error": error.to_string()}),
+        )),
+    }
+}
+
 fn summarize(checks: Vec<DoctorCheck>) -> DoctorReport {
     let ok = checks
         .iter()
@@ -270,6 +374,7 @@ impl DoctorCheck {
 #[cfg(test)]
 mod tests {
     use astragrid_core::{Action, Actor, CommandRequest, MissionLedger, Priority, Role};
+    use astragrid_provenance::ProvenanceFile;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -317,5 +422,56 @@ mod tests {
 
         assert_eq!(report.status, DoctorStatus::Failed);
         assert_eq!(report.failures, 1);
+    }
+
+    #[test]
+    fn reports_release_provenance_health_with_unsigned_warning() {
+        let dir = tempdir().unwrap();
+        let artifact = dir.path().join("artifact.zip");
+        std::fs::write(&artifact, b"release artifact").unwrap();
+        let provenance = PackageProvenance {
+            schema: 1,
+            package: "astragrid".to_owned(),
+            version: "0.1.0".to_owned(),
+            target: "test".to_owned(),
+            generated_at: "2026-05-07T00:00:00Z".to_owned(),
+            artifact: Some(ProvenanceFile {
+                path: PathBuf::from("artifact.zip"),
+                sha256: sha256_bytes(b"release artifact"),
+            }),
+            binary: None,
+            included_files: Vec::new(),
+            toolchain: serde_json::Value::Null,
+            git: serde_json::Value::Null,
+        };
+        let provenance_path = dir.path().join("artifact.provenance.json");
+        std::fs::write(&provenance_path, serde_json::to_vec(&provenance).unwrap()).unwrap();
+
+        let report = run_release_doctor(ReleaseDoctorInput {
+            provenance: provenance_path,
+            signatures: Vec::new(),
+            quorum: None,
+        });
+
+        assert_eq!(report.status, DoctorStatus::Warning);
+        assert_eq!(report.failures, 0);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.name == "release_provenance")
+        );
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.name == "release_custody")
+        );
+    }
+
+    fn sha256_bytes(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+
+        hex::encode(Sha256::digest(bytes))
     }
 }

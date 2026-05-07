@@ -216,11 +216,14 @@ version = "0.1.0"
 dependencies = [
  "astragrid-approvals",
  "astragrid-core",
+ "astragrid-provenance",
  "astragrid-state",
  "astragrid-store",
  "astragrid-sync-queue",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
 ]

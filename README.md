@@ -42,6 +42,7 @@ evidence-to-command workflow drafting, and a CLI.
 - JSON scenario runner for mission acceptance tests with ledger, state, and store assertions.
 - Self-contained operator dashboard export with peer health status, recent errors, and map links.
 - Workspace doctor for ledger, state, store, key, approval, and peer queue checks.
+- Release doctor for package provenance, detached signature, and quorum readiness checks.
 - Payload size limit and deterministic payload hashing.
 - Release provenance verification with fail-closed SHA-256 checks for packaged artifacts.
 - Optional operator-signed provenance envelopes for release custody.
