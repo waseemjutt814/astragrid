@@ -69,7 +69,7 @@ gated until those inputs exist.
 | L | Remote update channel | Not started until signed update metadata and hosting are available. |
 | M | Multi-host federation beyond bundle import | Trust bundles and peer sync exist; federation daemon needs multi-node integration tests. |
 | N | Offline map tile packs | Map export exists; tile packs need a licensed tile source and pack manifest validation. |
-| O | Operator audit timeline UI | Dashboard has recent events; timeline UI needs grouped audit interactions and export tests. |
+| O | Operator audit timeline UI | Complete for dashboard exports: the dashboard derives a real audit timeline from loaded mission events, approvals, peer sync jobs, and evidence bundles, renders severity/source/actor/subject/detail/reference, and has export coverage. Interactive drill-down remains part of the future full UI app. |
 | P | Policy rule pack system | Complete for local operation: policy packs validate schema/compatibility/rules, detached signatures bind the pack digest, registry checks verify active signer authority, and append paths can enforce a verified pack. |
 | Q | Quorum enrollment for operators | Complete for local registry changes: proposals bind authority, current registry digest, nonce, change body, and required approval count; verification requires distinct active commander signatures, rejects duplicates/revoked signers/stale registries, and apply mutates only after verification. Remote CA-backed enrollment remains gated. |
 | R | Replication daemon with service hardening | Peer queue worker and supervisor kits exist; replication daemon needs lifecycle hardening. |

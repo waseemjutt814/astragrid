@@ -292,6 +292,16 @@ Approved drafts can be appended through `approval append-approved`, which signs 
 request with a local operator identity, optionally checks the trusted registry, writes the mission
 ledger event, and marks the approval item executed with the resulting ledger event hash.
 
+## Operator Dashboard Timeline
+
+Dashboard exports and loopback serving render an operator audit timeline from the same verified
+artifacts already loaded for the dashboard. Timeline rows are derived from mission ledger events,
+approval items, peer sync jobs, and evidence bundles. Each row includes a timestamp, source, severity,
+actor, subject, operational detail, and short reference hash or job id. The timeline is not a
+separate store; it is a deterministic view over the real operator artifacts so stale or fabricated
+timeline state cannot drift away from the ledger, approval queue, peer queue, or evidence bundle
+inputs.
+
 ## Scenario Runner
 
 `astragrid-scenario` executes JSON acceptance scenarios against a local work directory. Scenarios

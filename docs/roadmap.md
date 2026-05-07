@@ -146,3 +146,10 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add signed client options to `net fetch`, `net plan-peers`, `peer-queue process`, and `peer-queue worker`.
 - [x] Add supervisor rendering for peer worker identities and federation daemon registries.
 - [x] Add protocol, parser, daemon, and acceptance coverage for registry-authorized peers.
+
+## Next Wave: Operator Audit Timeline
+
+- [x] Build dashboard timeline items from real mission events, approvals, peer jobs, and evidence bundles.
+- [x] Render timeline severity, source, actor, subject, detail, and references in exported/served dashboard HTML.
+- [x] Include timeline counts in dashboard export JSON output.
+- [x] Add focused dashboard coverage for ordering, severity, and HTML escaping.

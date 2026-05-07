@@ -16,3 +16,7 @@ astragrid-sync-queue = { path = "../astragrid-sync-queue" }
 serde.workspace = true
 thiserror.workspace = true
 time.workspace = true
+
+[dev-dependencies]
+astragrid-net = { path = "../astragrid-net" }
+serde_json.workspace = true

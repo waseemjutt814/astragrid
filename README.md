@@ -57,6 +57,7 @@ and a CLI.
 - Approved draft execution through signed, registry-checked ledger append.
 - JSON scenario runner for mission acceptance tests with ledger, state, and store assertions.
 - Self-contained operator dashboard export with peer health status, recent errors, and map links.
+- Operator audit timeline in dashboard exports, grouped from mission events, approvals, peer sync jobs, and evidence bundles.
 - Loopback dashboard serving that regenerates verified dashboard HTML for each request.
 - Workspace doctor for ledger, state, store, key, approval, and peer queue checks.
 - Release doctor for package provenance, detached signature, and quorum readiness checks.

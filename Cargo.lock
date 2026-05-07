@@ -206,10 +206,12 @@ dependencies = [
  "astragrid-approvals",
  "astragrid-core",
  "astragrid-evidence",
+ "astragrid-net",
  "astragrid-state",
  "astragrid-store",
  "astragrid-sync-queue",
  "serde",
+ "serde_json",
  "thiserror",
  "time",
 ]

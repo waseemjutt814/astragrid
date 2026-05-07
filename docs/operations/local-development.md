@@ -351,6 +351,7 @@ cargo run -q -p astragrid -- scenario run --input $scenario --workdir $scenarioW
 ```powershell
 $dashboard = ".cache\dashboard-$id.html"
 cargo run -q -p astragrid -- dashboard export --ledger $ledger --db $db --output $dashboard --title "Flood Watch"
+Select-String -LiteralPath $dashboard -Pattern "Operator Audit Timeline" -Quiet
 $server = Start-Job -ScriptBlock { param($ledger, $db) cargo run -q -p astragrid -- dashboard serve --ledger $ledger --db $db --bind 127.0.0.1:17880 --max-requests 1 } -ArgumentList $ledger, $db
 Start-Sleep -Seconds 2
 Invoke-WebRequest http://127.0.0.1:17880/dashboard.html | Select-Object -ExpandProperty StatusCode

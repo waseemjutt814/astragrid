@@ -2912,6 +2912,7 @@ fn main() -> Result<()> {
                     "peer_stale_retrying": dashboard.peer_health.as_ref().map(|health| health.stale_retrying).unwrap_or(0),
                     "peer_jobs": dashboard.peer_jobs.len(),
                     "evidence_bundles": dashboard.evidence_bundles.len(),
+                    "audit_timeline": dashboard.audit_timeline.len(),
                 }))
             }
             DashboardCommands::Serve {
@@ -5660,6 +5661,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "approval append",
             "store ingest",
             "dashboard export",
+            "operator audit timeline dashboard",
             "ops bundle",
             "workspace doctor",
             "workspace profile",
@@ -5890,6 +5892,7 @@ exit 0
     Invoke-AstraGrid store ingest --ledger $ledger --db $db
     Invoke-AstraGrid geo ingest --input $geo --output $features
     Invoke-AstraGrid dashboard export --ledger $ledger --db $db --approvals $approvals --output $dashboard --title {quoted_title}
+    if (-not (Select-String -LiteralPath $dashboard -Pattern 'Operator Audit Timeline' -Quiet)) {{ throw 'dashboard audit timeline missing' }}
     Invoke-AstraGrid ops bundle --ledger $ledger --db $db --approvals $approvals --identity $identity --features $features --output-dir $opsBundle --title {quoted_title}
     Invoke-AstraGrid doctor workspace --ledger $ledger --db $db --identity $identity --approvals $approvals
     Invoke-AstraGrid scenario run --input $scenario --workdir $scenarioRun
