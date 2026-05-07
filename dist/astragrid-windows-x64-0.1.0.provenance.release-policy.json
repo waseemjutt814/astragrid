@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "package": "astragrid",
+  "version": "0.1.0",
+  "target": "windows-x64",
+  "min_distinct_valid_signers": 1,
+  "required_signer_ids": [
+    "agop_712616ec1b07bb7e277e51e1"
+  ],
+  "allowed_signer_ids": [
+    "agop_712616ec1b07bb7e277e51e1"
+  ],
+  "require_clean_git": true
+}

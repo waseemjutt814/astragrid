@@ -1,0 +1,15 @@
+{
+  "doctor_status": "healthy",
+  "generated_at": "2026-05-07 16:46:32.3759751 +00:00:00",
+  "policy": "astragrid-windows-x64-0.1.0.provenance.release-policy.json",
+  "provenance": "astragrid-windows-x64-0.1.0.provenance.json",
+  "quorum": "astragrid-windows-x64-0.1.0.provenance.quorum.json",
+  "schema": 1,
+  "signatures": [
+    "astragrid-windows-x64-0.1.0.provenance.sig.json"
+  ],
+  "signer_ids": [
+    "agop_712616ec1b07bb7e277e51e1"
+  ],
+  "threshold": 1
+}
