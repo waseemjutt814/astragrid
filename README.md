@@ -8,7 +8,8 @@ ingestion, evidence bundles, authenticated peer snapshots, offline sync planning
 artifact sealing, materialized mission state, report export, packaging scripts, approval-gated
 workflow execution, executable acceptance scenarios, operator dashboard export, workspace doctor,
 admission policy checks, signed local team sessions, secure device pairing grants,
-signed policy rule packs, evidence-to-command workflow drafting, and a CLI.
+quorum-governed registry changes, signed policy rule packs, evidence-to-command workflow drafting,
+and a CLI.
 
 ## What Exists Now
 
@@ -22,6 +23,7 @@ signed policy rule packs, evidence-to-command workflow drafting, and a CLI.
 - Trusted operator registry with enrollment and revocation checks.
 - Public registry trust bundle export and verification for multi-host handoff.
 - Verified registry trust bundle import with conflict checks and revocation-dominant merge behavior.
+- Quorum-governed registry proposals with registry fingerprint binding, distinct commander approvals, and fail-closed apply.
 - Signed local team sessions that verify registry fingerprint, active identity, signature, and expiry.
 - Team-authorized signed append path that requires both a valid session and the matching operator key.
 - Signed device pairing grants with expiry, registry binding, and fail-closed verification.

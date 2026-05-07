@@ -45,7 +45,7 @@ use astragrid_sync_queue::{
     PeerSyncQueue, ProcessOutcome, QueueProcessOptions, QueueProcessResult, QueueStatus,
 };
 use astragrid_workflow::{CommandDraft, WorkflowPlanner, actor_from_parts};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -60,6 +60,8 @@ const TEAM_SESSION_SCHEMA: u16 = 1;
 const TEAM_SESSION_PURPOSE: &str = "astragrid-team-session-v1";
 const DEVICE_PAIRING_SCHEMA: u16 = 1;
 const DEVICE_PAIRING_PURPOSE: &str = "astragrid-device-pairing-v1";
+const REGISTRY_QUORUM_PROPOSAL_SCHEMA: u16 = 1;
+const REGISTRY_QUORUM_SIGNATURE_PURPOSE: &str = "astragrid-registry-quorum-v1";
 
 #[derive(Debug, Parser)]
 #[command(name = "astragrid")]
@@ -500,6 +502,58 @@ enum IdentityCommands {
         input: PathBuf,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+    },
+    /// Create a signed-change proposal for quorum-governed registry updates.
+    QuorumPropose {
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, value_enum)]
+        change: RegistryQuorumChangeKind,
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        #[arg(long)]
+        operator_id: Option<String>,
+        #[arg(long, default_value = "quorum")]
+        issued_by: String,
+        #[arg(long, default_value = "quorum")]
+        revoked_by: String,
+        #[arg(long, default_value = "quorum registry change")]
+        reason: String,
+        #[arg(long, default_value_t = 2)]
+        required_approvals: usize,
+    },
+    /// Sign a registry quorum proposal with an active operator key.
+    QuorumSign {
+        #[arg(long)]
+        proposal: PathBuf,
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_os_key: Option<PathBuf>,
+    },
+    /// Verify registry quorum signatures without changing the registry.
+    QuorumVerify {
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        proposal: PathBuf,
+        #[arg(long = "signature", required = true)]
+        signatures: Vec<PathBuf>,
+    },
+    /// Apply a verified quorum-governed registry update.
+    QuorumApply {
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        proposal: PathBuf,
+        #[arg(long = "signature", required = true)]
+        signatures: Vec<PathBuf>,
     },
 }
 
@@ -1884,6 +1938,64 @@ fn main() -> Result<()> {
                 input,
                 dry_run,
             } => print_json(&import_registry_trust_bundle(&registry, &input, dry_run)?),
+            IdentityCommands::QuorumPropose {
+                registry,
+                output,
+                change,
+                identity,
+                operator_id,
+                issued_by,
+                revoked_by,
+                reason,
+                required_approvals,
+            } => print_json(&create_registry_quorum_proposal(
+                RegistryQuorumProposalRequest {
+                    registry,
+                    output,
+                    change,
+                    identity,
+                    operator_id,
+                    issued_by,
+                    revoked_by,
+                    reason,
+                    required_approvals,
+                },
+            )?),
+            IdentityCommands::QuorumSign {
+                proposal,
+                identity,
+                output,
+                passphrase_file,
+                passphrase_os_key,
+            } => print_json(&sign_registry_quorum_proposal(
+                &proposal,
+                &identity,
+                passphrase_file.as_ref(),
+                passphrase_os_key.as_ref(),
+                &output,
+            )?),
+            IdentityCommands::QuorumVerify {
+                registry,
+                proposal,
+                signatures,
+            } => {
+                let report =
+                    verify_registry_quorum_proposal_file(&registry, &proposal, &signatures)?;
+                print_json(&report)?;
+                if !report.valid {
+                    bail!("registry quorum proposal verification failed");
+                }
+                Ok(())
+            }
+            IdentityCommands::QuorumApply {
+                registry,
+                proposal,
+                signatures,
+            } => print_json(&apply_registry_quorum_proposal(
+                &registry,
+                &proposal,
+                &signatures,
+            )?),
         },
         Commands::Team { command } => match command {
             TeamCommands::SessionIssue {
@@ -3278,6 +3390,13 @@ struct ArtifactRetentionRequest {
     delete: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+enum RegistryQuorumChangeKind {
+    Enroll,
+    Revoke,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct TrustedRegistryBundle {
     schema: u16,
@@ -3287,6 +3406,59 @@ struct TrustedRegistryBundle {
     active_operators: usize,
     revoked_operators: usize,
     operators: Vec<OperatorRegistryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct RegistryQuorumProposal {
+    schema: u16,
+    authority: String,
+    #[serde(with = "time::serde::rfc3339")]
+    proposed_at: OffsetDateTime,
+    registry_sha256: String,
+    required_approvals: usize,
+    nonce: String,
+    change: RegistryQuorumChange,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RegistryQuorumChange {
+    Enroll {
+        identity: OperatorIdentity,
+        issued_by: String,
+    },
+    Revoke {
+        operator_id: String,
+        revoked_by: String,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct RegistryQuorumVerification {
+    valid: bool,
+    registry: PathBuf,
+    proposal: PathBuf,
+    authority: String,
+    registry_sha256: String,
+    proposal_registry_sha256: String,
+    proposal_digest: String,
+    required_approvals: usize,
+    approved_signers: Vec<OperatorIdentity>,
+    checks: Vec<Value>,
+    signatures: Vec<Value>,
+}
+
+struct RegistryQuorumProposalRequest {
+    registry: PathBuf,
+    output: PathBuf,
+    change: RegistryQuorumChangeKind,
+    identity: Option<PathBuf>,
+    operator_id: Option<String>,
+    issued_by: String,
+    revoked_by: String,
+    reason: String,
+    required_approvals: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4622,6 +4794,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "team session authorization",
             "secure device pairing",
             "signed policy rule pack",
+            "quorum registry enrollment",
             "package provenance"
         ]
     });
@@ -4695,7 +4868,14 @@ try {{
     $db = Join-Path $Run 'mission.db'
     $identity = Join-Path $Run 'lead.agkey'
     $passphrase = Join-Path $Run 'lead.pass'
+    $deputyIdentity = Join-Path $Run 'deputy.agkey'
+    $deputyPassphrase = Join-Path $Run 'deputy.pass'
+    $medicIdentity = Join-Path $Run 'medic.agkey'
+    $medicPassphrase = Join-Path $Run 'medic.pass'
     $registry = Join-Path $Run 'operators.agregistry'
+    $quorumProposal = Join-Path $Run 'medic-enroll.proposal.json'
+    $leadQuorumSignature = Join-Path $Run 'lead.quorum.sig.json'
+    $deputyQuorumSignature = Join-Path $Run 'deputy.quorum.sig.json'
     $session = Join-Path $Run 'lead.session.json'
     $pairing = Join-Path $Run 'field-device.pairing.json'
     $policyPack = Join-Path $Run 'field-safety.policy.json'
@@ -4726,6 +4906,8 @@ try {{
     $vaultPayload = Join-Path $Run 'vault-payload.json'
 
     'acceptance local passphrase' | Set-Content -Encoding UTF8 $passphrase
+    'acceptance deputy passphrase' | Set-Content -Encoding UTF8 $deputyPassphrase
+    'acceptance medic passphrase' | Set-Content -Encoding UTF8 $medicPassphrase
     '{{"water_level_m":5.2}}' | Set-Content -Encoding UTF8 $payload
     '{{"team_id":"alpha"}}' | Set-Content -Encoding UTF8 $dispatchPayload
     '{{"note":"vault runtime append"}}' | Set-Content -Encoding UTF8 $vaultPayload
@@ -4745,8 +4927,16 @@ try {{
 
     Invoke-AstraGrid init --mission flood-watch --ledger $ledger
     Invoke-AstraGrid identity create --path $identity --name lead --role incident_commander --passphrase-file $passphrase
+    Invoke-AstraGrid identity create --path $deputyIdentity --name deputy --role incident_commander --passphrase-file $deputyPassphrase
+    Invoke-AstraGrid identity create --path $medicIdentity --name medic --role operator --passphrase-file $medicPassphrase
     Invoke-AstraGrid identity registry-init --registry $registry --authority local-command
     Invoke-AstraGrid identity enroll --registry $registry --identity $identity --passphrase-file $passphrase --issued-by local-command
+    Invoke-AstraGrid identity enroll --registry $registry --identity $deputyIdentity --passphrase-file $deputyPassphrase --issued-by bootstrap
+    Invoke-AstraGrid identity quorum-propose --registry $registry --output $quorumProposal --change enroll --identity $medicIdentity --issued-by quorum --required-approvals 2
+    Invoke-AstraGrid identity quorum-sign --proposal $quorumProposal --identity $identity --passphrase-file $passphrase --output $leadQuorumSignature
+    Invoke-AstraGrid identity quorum-sign --proposal $quorumProposal --identity $deputyIdentity --passphrase-file $deputyPassphrase --output $deputyQuorumSignature
+    Invoke-AstraGrid identity quorum-verify --registry $registry --proposal $quorumProposal --signature $leadQuorumSignature --signature $deputyQuorumSignature
+    Invoke-AstraGrid identity quorum-apply --registry $registry --proposal $quorumProposal --signature $leadQuorumSignature --signature $deputyQuorumSignature
     Invoke-AstraGrid team session-issue --identity $identity --passphrase-file $passphrase --registry $registry --output $session --ttl-minutes 30
     Invoke-AstraGrid team session-verify --session $session --registry $registry
     Invoke-AstraGrid team authorize --session $session --registry $registry --action declare_incident --subject river-east --priority critical --payload "@$payload"
@@ -4791,6 +4981,317 @@ finally {{
 
 fn powershell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn create_registry_quorum_proposal(request: RegistryQuorumProposalRequest) -> Result<Value> {
+    if request.required_approvals == 0 {
+        bail!("registry quorum requires at least one approval");
+    }
+    let registry = OperatorRegistry::load_from_file(&request.registry)?;
+    let active_signers = active_registry_quorum_signer_count(&registry);
+    if active_signers < request.required_approvals {
+        bail!(
+            "registry has {active_signers} active quorum signers, required {}",
+            request.required_approvals
+        );
+    }
+
+    let change = match request.change {
+        RegistryQuorumChangeKind::Enroll => {
+            if request.operator_id.is_some() {
+                bail!("--operator-id is only valid with --change revoke");
+            }
+            let identity_path = request
+                .identity
+                .as_ref()
+                .context("--identity is required with --change enroll")?;
+            let identity = OperatorKeypair::inspect_key_file(identity_path)?.identity;
+            RegistryQuorumChange::Enroll {
+                identity,
+                issued_by: request.issued_by,
+            }
+        }
+        RegistryQuorumChangeKind::Revoke => {
+            if request.identity.is_some() {
+                bail!("--identity is only valid with --change enroll");
+            }
+            let operator_id = request
+                .operator_id
+                .context("--operator-id is required with --change revoke")?;
+            RegistryQuorumChange::Revoke {
+                operator_id,
+                revoked_by: request.revoked_by,
+                reason: request.reason,
+            }
+        }
+    };
+
+    let precondition = registry_quorum_change_precondition(&change, &registry);
+    if !precondition["ready"].as_bool().unwrap_or(false) {
+        bail!(
+            "registry quorum proposal precondition failed: {}",
+            precondition
+        );
+    }
+
+    let proposal = RegistryQuorumProposal {
+        schema: REGISTRY_QUORUM_PROPOSAL_SCHEMA,
+        authority: registry.authority().to_owned(),
+        proposed_at: OffsetDateTime::now_utc(),
+        registry_sha256: sha256_file_hex(&request.registry)?,
+        required_approvals: request.required_approvals,
+        nonce: random_hex(16),
+        change,
+    };
+    let digest = registry_quorum_proposal_digest(&proposal)?;
+    write_json_file(&request.output, &proposal)?;
+    Ok(json!({
+        "output": request.output,
+        "authority": proposal.authority,
+        "change": registry_quorum_change_label(&proposal.change),
+        "registry_sha256": proposal.registry_sha256,
+        "required_approvals": proposal.required_approvals,
+        "proposal_digest": digest,
+    }))
+}
+
+fn sign_registry_quorum_proposal(
+    proposal_path: &PathBuf,
+    identity_path: &PathBuf,
+    passphrase_file: Option<&PathBuf>,
+    passphrase_os_key: Option<&PathBuf>,
+    output: &PathBuf,
+) -> Result<Value> {
+    let proposal: RegistryQuorumProposal = read_json_file(proposal_path)?;
+    let digest = registry_quorum_proposal_digest(&proposal)?;
+    let keypair = load_keypair(identity_path, passphrase_file, passphrase_os_key)?;
+    let signature = keypair.sign_digest(REGISTRY_QUORUM_SIGNATURE_PURPOSE, "sha256", &digest)?;
+    write_json_file(output, &signature)?;
+    Ok(json!({
+        "output": output,
+        "proposal": proposal_path,
+        "proposal_digest": digest,
+        "operator_id": keypair.identity().id,
+        "purpose": REGISTRY_QUORUM_SIGNATURE_PURPOSE,
+    }))
+}
+
+fn verify_registry_quorum_proposal_file(
+    registry_path: &PathBuf,
+    proposal_path: &PathBuf,
+    signature_paths: &[PathBuf],
+) -> Result<RegistryQuorumVerification> {
+    let proposal: RegistryQuorumProposal = read_json_file(proposal_path)?;
+    verify_registry_quorum_proposal(registry_path, proposal_path, &proposal, signature_paths)
+}
+
+fn verify_registry_quorum_proposal(
+    registry_path: &PathBuf,
+    proposal_path: &Path,
+    proposal: &RegistryQuorumProposal,
+    signature_paths: &[PathBuf],
+) -> Result<RegistryQuorumVerification> {
+    let registry = OperatorRegistry::load_from_file(registry_path)?;
+    let registry_sha256 = sha256_file_hex(registry_path)?;
+    let proposal_digest = registry_quorum_proposal_digest(proposal)?;
+    let precondition = registry_quorum_change_precondition(&proposal.change, &registry);
+
+    let mut checks = vec![
+        check_value(
+            "schema",
+            proposal.schema == REGISTRY_QUORUM_PROPOSAL_SCHEMA,
+            json!({"schema": proposal.schema}),
+        ),
+        check_value(
+            "authority",
+            proposal.authority == registry.authority(),
+            json!({"expected": proposal.authority, "actual": registry.authority()}),
+        ),
+        check_value(
+            "registry_sha256",
+            proposal.registry_sha256 == registry_sha256,
+            json!({"expected": proposal.registry_sha256, "actual": registry_sha256}),
+        ),
+        check_value(
+            "required_approvals",
+            proposal.required_approvals > 0,
+            json!({"required_approvals": proposal.required_approvals}),
+        ),
+        check_value(
+            "change_precondition",
+            precondition["ready"].as_bool().unwrap_or(false),
+            precondition,
+        ),
+        check_value(
+            "signatures_supplied",
+            !signature_paths.is_empty(),
+            json!({"signatures": signature_paths.len()}),
+        ),
+    ];
+
+    let mut approved_signers = Vec::new();
+    let mut signer_ids = BTreeSet::new();
+    let mut duplicate_signers = Vec::new();
+    let mut signature_reports = Vec::new();
+    for signature_path in signature_paths {
+        let signature: DetachedSignature = read_json_file(signature_path)?;
+        let signature_result = signature.verify_digest(
+            REGISTRY_QUORUM_SIGNATURE_PURPOSE,
+            "sha256",
+            &proposal_digest,
+        );
+        let signature_valid = signature_result.is_ok();
+        let signature_error = signature_result.err().map(|error| error.to_string());
+        let registry_status = registry_identity_status(&signature.identity, &registry);
+        let registry_error = registry_status.as_ref().err().cloned();
+        let role_allowed = signature.identity.role.allows(Role::IncidentCommander);
+        let duplicate = !signer_ids.insert(signature.identity.id.clone());
+        if duplicate {
+            duplicate_signers.push(signature.identity.id.clone());
+        }
+        let accepted = signature_valid && registry_status.is_ok() && role_allowed && !duplicate;
+        if accepted {
+            approved_signers.push(signature.identity.clone());
+        }
+        signature_reports.push(json!({
+            "path": signature_path,
+            "operator_id": signature.identity.id,
+            "role": signature.identity.role,
+            "signature_valid": signature_valid,
+            "signature_error": signature_error,
+            "registry_status": registry_error,
+            "role_allowed": role_allowed,
+            "duplicate": duplicate,
+            "accepted": accepted,
+        }));
+    }
+
+    let all_supplied_signatures_accepted = signature_reports
+        .iter()
+        .all(|report| report["accepted"].as_bool() == Some(true));
+    checks.push(check_value(
+        "signature_records",
+        all_supplied_signatures_accepted,
+        json!({"accepted": approved_signers.len(), "supplied": signature_paths.len()}),
+    ));
+    checks.push(check_value(
+        "unique_signers",
+        duplicate_signers.is_empty(),
+        json!({"duplicates": duplicate_signers}),
+    ));
+    checks.push(check_value(
+        "quorum_threshold",
+        approved_signers.len() >= proposal.required_approvals,
+        json!({
+            "approved": approved_signers.len(),
+            "required": proposal.required_approvals,
+        }),
+    ));
+
+    let valid = checks
+        .iter()
+        .all(|check| check["status"].as_str() == Some("pass"));
+    Ok(RegistryQuorumVerification {
+        valid,
+        registry: registry_path.clone(),
+        proposal: proposal_path.to_path_buf(),
+        authority: proposal.authority.clone(),
+        registry_sha256,
+        proposal_registry_sha256: proposal.registry_sha256.clone(),
+        proposal_digest,
+        required_approvals: proposal.required_approvals,
+        approved_signers,
+        checks,
+        signatures: signature_reports,
+    })
+}
+
+fn apply_registry_quorum_proposal(
+    registry_path: &PathBuf,
+    proposal_path: &PathBuf,
+    signature_paths: &[PathBuf],
+) -> Result<Value> {
+    let proposal: RegistryQuorumProposal = read_json_file(proposal_path)?;
+    let verification =
+        verify_registry_quorum_proposal(registry_path, proposal_path, &proposal, signature_paths)?;
+    if !verification.valid {
+        bail!("registry quorum proposal verification failed");
+    }
+
+    let change_label = registry_quorum_change_label(&proposal.change);
+    let registry_sha256_before = proposal.registry_sha256.clone();
+    let required_approvals = proposal.required_approvals;
+    let mut registry = OperatorRegistry::load_from_file(registry_path)?;
+    let applied_entry = match proposal.change {
+        RegistryQuorumChange::Enroll {
+            identity,
+            issued_by,
+        } => registry.enroll(identity, issued_by)?,
+        RegistryQuorumChange::Revoke {
+            operator_id,
+            revoked_by,
+            reason,
+        } => registry.revoke(&operator_id, revoked_by, reason)?,
+    };
+    registry.save()?;
+    let registry_sha256_after = sha256_file_hex(registry_path)?;
+    Ok(json!({
+        "applied": true,
+        "change": change_label,
+        "registry": registry_path,
+        "registry_sha256_before": registry_sha256_before,
+        "registry_sha256_after": registry_sha256_after,
+        "required_approvals": required_approvals,
+        "approved_signers": verification.approved_signers,
+        "entry": applied_entry,
+    }))
+}
+
+fn registry_quorum_proposal_digest(proposal: &RegistryQuorumProposal) -> Result<String> {
+    Ok(sha256_bytes_hex(&serde_json::to_vec(proposal)?))
+}
+
+fn registry_quorum_change_precondition(
+    change: &RegistryQuorumChange,
+    registry: &OperatorRegistry,
+) -> Value {
+    match change {
+        RegistryQuorumChange::Enroll { identity, .. } => {
+            let existing = registry.get(&identity.id);
+            json!({
+                "ready": existing.is_none(),
+                "change": "enroll",
+                "operator_id": identity.id,
+                "existing_status": existing.map(|entry| entry.status),
+            })
+        }
+        RegistryQuorumChange::Revoke { operator_id, .. } => {
+            let existing = registry.get(operator_id);
+            json!({
+                "ready": existing.is_some_and(|entry| entry.status == OperatorStatus::Active),
+                "change": "revoke",
+                "operator_id": operator_id,
+                "existing_status": existing.map(|entry| entry.status),
+            })
+        }
+    }
+}
+
+fn registry_quorum_change_label(change: &RegistryQuorumChange) -> &'static str {
+    match change {
+        RegistryQuorumChange::Enroll { .. } => "enroll",
+        RegistryQuorumChange::Revoke { .. } => "revoke",
+    }
+}
+
+fn active_registry_quorum_signer_count(registry: &OperatorRegistry) -> usize {
+    registry
+        .entries()
+        .filter(|entry| {
+            entry.status == OperatorStatus::Active
+                && entry.identity.role.allows(Role::IncidentCommander)
+        })
+        .count()
 }
 
 fn build_registry_trust_bundle(registry_path: &PathBuf) -> Result<TrustedRegistryBundle> {
@@ -5958,7 +6459,11 @@ fn print_json<T: serde::Serialize + ?Sized>(value: &T) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io::Write, path::PathBuf};
+    use std::{
+        fs,
+        io::Write,
+        path::{Path, PathBuf},
+    };
 
     use clap::Parser;
     use serde_json::json;
@@ -5968,20 +6473,37 @@ mod tests {
         ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands,
         DevicePairingRequest, DoctorCommands, FirstRunRequest, GeoCommands, IdentityCommands,
         OpsBundleRequest, OpsCommands, PeerQueueCommands, PolicyPackCommands, ProvenanceCommands,
-        ReadinessGateRequest, RecommendCommands, ReleaseCustodyPackRequest,
-        ReleaseEvidencePackRequest, RestoreRequest, RotateOperatorRequest, SetupCommands,
-        TeamAppendRequest, TeamSessionIssueRequest, VaultAppendRequest, VaultCommands,
-        WorkspaceProfile, acceptance_scenario, authorize_team_action, build_registry_trust_bundle,
-        create_device_pairing, default_signature_output_path, evaluate_policy_pack_file,
-        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
-        inject_meta_refresh, issue_team_session, read_payload, render_acceptance_script,
-        render_default_launcher, restore_workspace_backup, rotate_operator_key,
-        run_artifact_retention, run_first_run_setup, run_profile_doctor, run_readiness_gate,
-        sha256_file_hex, team_append_signed, vault_append, vault_init, vault_tail, vault_verify,
-        verify_device_pairing_file, verify_policy_pack_file, verify_registry_trust_bundle,
-        verify_team_session_file, write_acceptance_pack, write_release_custody_pack,
-        write_release_evidence_pack, write_workspace_backup,
+        ReadinessGateRequest, RecommendCommands, RegistryQuorumChangeKind,
+        RegistryQuorumProposalRequest, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
+        RestoreRequest, RotateOperatorRequest, SetupCommands, TeamAppendRequest,
+        TeamSessionIssueRequest, VaultAppendRequest, VaultCommands, WorkspaceProfile,
+        acceptance_scenario, apply_registry_quorum_proposal, authorize_team_action,
+        build_registry_trust_bundle, create_device_pairing, create_registry_quorum_proposal,
+        default_signature_output_path, evaluate_policy_pack_file, export_ops_bundle,
+        http_request_path, http_response, import_registry_trust_bundle, inject_meta_refresh,
+        issue_team_session, read_payload, render_acceptance_script, render_default_launcher,
+        restore_workspace_backup, rotate_operator_key, run_artifact_retention, run_first_run_setup,
+        run_profile_doctor, run_readiness_gate, sha256_file_hex, sign_registry_quorum_proposal,
+        team_append_signed, vault_append, vault_init, vault_tail, vault_verify,
+        verify_device_pairing_file, verify_policy_pack_file, verify_registry_quorum_proposal_file,
+        verify_registry_trust_bundle, verify_team_session_file, write_acceptance_pack,
+        write_release_custody_pack, write_release_evidence_pack, write_workspace_backup,
     };
+
+    fn save_test_key(
+        root: &Path,
+        name: &str,
+        role: astragrid_core::Role,
+    ) -> (astragrid_core::OperatorKeypair, PathBuf, PathBuf) {
+        let keypair = astragrid_core::OperatorKeypair::generate(name, role);
+        let key_path = root.join(format!("{name}.agkey"));
+        let passphrase_path = root.join(format!("{name}.pass"));
+        fs::write(&passphrase_path, b"test-pass").unwrap();
+        keypair
+            .save_encrypted_to_file(&key_path, b"test-pass")
+            .unwrap();
+        (keypair, key_path, passphrase_path)
+    }
 
     #[test]
     fn parses_no_arg_default_launcher() {
@@ -6157,6 +6679,82 @@ mod tests {
             } => {
                 assert_eq!(input, PathBuf::from("ops/trust-bundle.json"));
                 assert_eq!(registry, Some(PathBuf::from("data/operators.agregistry")));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_identity_quorum_commands() {
+        let propose = Cli::try_parse_from([
+            "astragrid",
+            "identity",
+            "quorum-propose",
+            "--registry",
+            "data/operators.agregistry",
+            "--output",
+            "ops/medic.proposal.json",
+            "--change",
+            "enroll",
+            "--identity",
+            "data/operators/medic.agkey",
+            "--required-approvals",
+            "2",
+        ])
+        .unwrap();
+        match propose.command.expect("command") {
+            Commands::Identity {
+                command:
+                    IdentityCommands::QuorumPropose {
+                        registry,
+                        output,
+                        change,
+                        identity,
+                        required_approvals,
+                        ..
+                    },
+            } => {
+                assert_eq!(registry, PathBuf::from("data/operators.agregistry"));
+                assert_eq!(output, PathBuf::from("ops/medic.proposal.json"));
+                assert_eq!(change, RegistryQuorumChangeKind::Enroll);
+                assert_eq!(identity, Some(PathBuf::from("data/operators/medic.agkey")));
+                assert_eq!(required_approvals, 2);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let apply = Cli::try_parse_from([
+            "astragrid",
+            "identity",
+            "quorum-apply",
+            "--registry",
+            "data/operators.agregistry",
+            "--proposal",
+            "ops/medic.proposal.json",
+            "--signature",
+            "ops/lead.sig.json",
+            "--signature",
+            "ops/deputy.sig.json",
+        ])
+        .unwrap();
+        match apply.command.expect("command") {
+            Commands::Identity {
+                command:
+                    IdentityCommands::QuorumApply {
+                        registry,
+                        proposal,
+                        signatures,
+                    },
+            } => {
+                assert_eq!(registry, PathBuf::from("data/operators.agregistry"));
+                assert_eq!(proposal, PathBuf::from("ops/medic.proposal.json"));
+                assert_eq!(
+                    signatures,
+                    vec![
+                        PathBuf::from("ops/lead.sig.json"),
+                        PathBuf::from("ops/deputy.sig.json"),
+                    ]
+                );
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -7323,6 +7921,290 @@ mod tests {
         assert_eq!(
             registry.get(new_id).unwrap().status,
             astragrid_core::OperatorStatus::Active
+        );
+    }
+
+    #[test]
+    fn registry_quorum_applies_enrollment_with_distinct_commanders() {
+        let dir = tempdir().unwrap();
+        let registry_path = dir.path().join("operators.agregistry");
+        let proposal_path = dir.path().join("enroll.proposal.json");
+        let lead_signature = dir.path().join("lead.sig.json");
+        let deputy_signature = dir.path().join("deputy.sig.json");
+        let (lead, lead_key, lead_pass) =
+            save_test_key(dir.path(), "lead", astragrid_core::Role::IncidentCommander);
+        let (deputy, deputy_key, deputy_pass) = save_test_key(
+            dir.path(),
+            "deputy",
+            astragrid_core::Role::IncidentCommander,
+        );
+        let (candidate, candidate_key, _) =
+            save_test_key(dir.path(), "medic", astragrid_core::Role::Operator);
+        let mut registry = astragrid_core::OperatorRegistry::new("local-command");
+        registry
+            .enroll(lead.identity().clone(), "bootstrap")
+            .unwrap();
+        registry
+            .enroll(deputy.identity().clone(), "bootstrap")
+            .unwrap();
+        registry.save_to_file(&registry_path).unwrap();
+
+        create_registry_quorum_proposal(RegistryQuorumProposalRequest {
+            registry: registry_path.clone(),
+            output: proposal_path.clone(),
+            change: RegistryQuorumChangeKind::Enroll,
+            identity: Some(candidate_key),
+            operator_id: None,
+            issued_by: "quorum".to_owned(),
+            revoked_by: "quorum".to_owned(),
+            reason: "not used".to_owned(),
+            required_approvals: 2,
+        })
+        .unwrap();
+        sign_registry_quorum_proposal(
+            &proposal_path,
+            &lead_key,
+            Some(&lead_pass),
+            None,
+            &lead_signature,
+        )
+        .unwrap();
+        sign_registry_quorum_proposal(
+            &proposal_path,
+            &deputy_key,
+            Some(&deputy_pass),
+            None,
+            &deputy_signature,
+        )
+        .unwrap();
+
+        let report = verify_registry_quorum_proposal_file(
+            &registry_path,
+            &proposal_path,
+            &[lead_signature.clone(), deputy_signature.clone()],
+        )
+        .unwrap();
+        assert!(report.valid);
+        assert_eq!(report.approved_signers.len(), 2);
+        let applied = apply_registry_quorum_proposal(
+            &registry_path,
+            &proposal_path,
+            &[lead_signature, deputy_signature],
+        )
+        .unwrap();
+        assert!(applied["applied"].as_bool().unwrap());
+        let registry = astragrid_core::OperatorRegistry::load_from_file(&registry_path).unwrap();
+        assert_eq!(
+            registry.get(&candidate.identity().id).unwrap().status,
+            astragrid_core::OperatorStatus::Active
+        );
+    }
+
+    #[test]
+    fn registry_quorum_rejects_duplicate_signer_for_threshold() {
+        let dir = tempdir().unwrap();
+        let registry_path = dir.path().join("operators.agregistry");
+        let proposal_path = dir.path().join("enroll.proposal.json");
+        let lead_signature = dir.path().join("lead.sig.json");
+        let (lead, lead_key, lead_pass) =
+            save_test_key(dir.path(), "lead", astragrid_core::Role::IncidentCommander);
+        let (deputy, _, _) = save_test_key(
+            dir.path(),
+            "deputy",
+            astragrid_core::Role::IncidentCommander,
+        );
+        let (_, candidate_key, _) =
+            save_test_key(dir.path(), "medic", astragrid_core::Role::Operator);
+        let mut registry = astragrid_core::OperatorRegistry::new("local-command");
+        registry
+            .enroll(lead.identity().clone(), "bootstrap")
+            .unwrap();
+        registry
+            .enroll(deputy.identity().clone(), "bootstrap")
+            .unwrap();
+        registry.save_to_file(&registry_path).unwrap();
+        create_registry_quorum_proposal(RegistryQuorumProposalRequest {
+            registry: registry_path.clone(),
+            output: proposal_path.clone(),
+            change: RegistryQuorumChangeKind::Enroll,
+            identity: Some(candidate_key),
+            operator_id: None,
+            issued_by: "quorum".to_owned(),
+            revoked_by: "quorum".to_owned(),
+            reason: "not used".to_owned(),
+            required_approvals: 2,
+        })
+        .unwrap();
+        sign_registry_quorum_proposal(
+            &proposal_path,
+            &lead_key,
+            Some(&lead_pass),
+            None,
+            &lead_signature,
+        )
+        .unwrap();
+
+        let report = verify_registry_quorum_proposal_file(
+            &registry_path,
+            &proposal_path,
+            &[lead_signature.clone(), lead_signature],
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert_eq!(report.approved_signers.len(), 1);
+    }
+
+    #[test]
+    fn registry_quorum_rejects_revoked_signer() {
+        let dir = tempdir().unwrap();
+        let registry_path = dir.path().join("operators.agregistry");
+        let proposal_path = dir.path().join("enroll.proposal.json");
+        let lead_signature = dir.path().join("lead.sig.json");
+        let revoked_signature = dir.path().join("revoked.sig.json");
+        let (lead, lead_key, lead_pass) =
+            save_test_key(dir.path(), "lead", astragrid_core::Role::IncidentCommander);
+        let (deputy, _, _) = save_test_key(
+            dir.path(),
+            "deputy",
+            astragrid_core::Role::IncidentCommander,
+        );
+        let (revoked, revoked_key, revoked_pass) = save_test_key(
+            dir.path(),
+            "former",
+            astragrid_core::Role::IncidentCommander,
+        );
+        let (_, candidate_key, _) =
+            save_test_key(dir.path(), "medic", astragrid_core::Role::Operator);
+        let mut registry = astragrid_core::OperatorRegistry::new("local-command");
+        registry
+            .enroll(lead.identity().clone(), "bootstrap")
+            .unwrap();
+        registry
+            .enroll(deputy.identity().clone(), "bootstrap")
+            .unwrap();
+        registry
+            .enroll(revoked.identity().clone(), "bootstrap")
+            .unwrap();
+        registry
+            .revoke(&revoked.identity().id, "bootstrap", "left team")
+            .unwrap();
+        registry.save_to_file(&registry_path).unwrap();
+        create_registry_quorum_proposal(RegistryQuorumProposalRequest {
+            registry: registry_path.clone(),
+            output: proposal_path.clone(),
+            change: RegistryQuorumChangeKind::Enroll,
+            identity: Some(candidate_key),
+            operator_id: None,
+            issued_by: "quorum".to_owned(),
+            revoked_by: "quorum".to_owned(),
+            reason: "not used".to_owned(),
+            required_approvals: 2,
+        })
+        .unwrap();
+        sign_registry_quorum_proposal(
+            &proposal_path,
+            &lead_key,
+            Some(&lead_pass),
+            None,
+            &lead_signature,
+        )
+        .unwrap();
+        sign_registry_quorum_proposal(
+            &proposal_path,
+            &revoked_key,
+            Some(&revoked_pass),
+            None,
+            &revoked_signature,
+        )
+        .unwrap();
+
+        let report = verify_registry_quorum_proposal_file(
+            &registry_path,
+            &proposal_path,
+            &[lead_signature, revoked_signature],
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert_eq!(report.approved_signers.len(), 1);
+        assert!(report.signatures.iter().any(|signature| {
+            signature["operator_id"].as_str() == Some(&revoked.identity().id)
+                && signature["registry_status"].as_str() == Some("revoked")
+        }));
+    }
+
+    #[test]
+    fn registry_quorum_rejects_stale_registry_digest() {
+        let dir = tempdir().unwrap();
+        let registry_path = dir.path().join("operators.agregistry");
+        let proposal_path = dir.path().join("enroll.proposal.json");
+        let lead_signature = dir.path().join("lead.sig.json");
+        let deputy_signature = dir.path().join("deputy.sig.json");
+        let (lead, lead_key, lead_pass) =
+            save_test_key(dir.path(), "lead", astragrid_core::Role::IncidentCommander);
+        let (deputy, deputy_key, deputy_pass) = save_test_key(
+            dir.path(),
+            "deputy",
+            astragrid_core::Role::IncidentCommander,
+        );
+        let (_, candidate_key, _) =
+            save_test_key(dir.path(), "medic", astragrid_core::Role::Operator);
+        let (late, _, _) =
+            save_test_key(dir.path(), "late", astragrid_core::Role::IncidentCommander);
+        let mut registry = astragrid_core::OperatorRegistry::new("local-command");
+        registry
+            .enroll(lead.identity().clone(), "bootstrap")
+            .unwrap();
+        registry
+            .enroll(deputy.identity().clone(), "bootstrap")
+            .unwrap();
+        registry.save_to_file(&registry_path).unwrap();
+        create_registry_quorum_proposal(RegistryQuorumProposalRequest {
+            registry: registry_path.clone(),
+            output: proposal_path.clone(),
+            change: RegistryQuorumChangeKind::Enroll,
+            identity: Some(candidate_key),
+            operator_id: None,
+            issued_by: "quorum".to_owned(),
+            revoked_by: "quorum".to_owned(),
+            reason: "not used".to_owned(),
+            required_approvals: 2,
+        })
+        .unwrap();
+        sign_registry_quorum_proposal(
+            &proposal_path,
+            &lead_key,
+            Some(&lead_pass),
+            None,
+            &lead_signature,
+        )
+        .unwrap();
+        sign_registry_quorum_proposal(
+            &proposal_path,
+            &deputy_key,
+            Some(&deputy_pass),
+            None,
+            &deputy_signature,
+        )
+        .unwrap();
+        let mut registry =
+            astragrid_core::OperatorRegistry::load_from_file(&registry_path).unwrap();
+        registry
+            .enroll(late.identity().clone(), "bootstrap")
+            .unwrap();
+        registry.save().unwrap();
+
+        let report = verify_registry_quorum_proposal_file(
+            &registry_path,
+            &proposal_path,
+            &[lead_signature, deputy_signature],
+        )
+        .unwrap();
+        assert!(!report.valid);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check["name"] == "registry_sha256" && check["status"] == "fail")
         );
     }
 

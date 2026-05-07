@@ -38,17 +38,34 @@ $ledger = ".cache\mission-$id.agl"
 $db = ".cache\mission-$id.db"
 $key = ".cache\lead-$id.agkey"
 $passphrase = ".cache\lead-$id.pass"
+$deputyKey = ".cache\deputy-$id.agkey"
+$deputyPassphrase = ".cache\deputy-$id.pass"
+$medicKey = ".cache\medic-$id.agkey"
+$medicPassphrase = ".cache\medic-$id.pass"
 $registry = ".cache\operators-$id.agregistry"
+$quorumProposal = ".cache\medic-enroll-$id.proposal.json"
+$leadQuorumSignature = ".cache\lead-quorum-$id.sig.json"
+$deputyQuorumSignature = ".cache\deputy-quorum-$id.sig.json"
 $payload = ".cache\payload-$id.json"
 
 'strong local passphrase' | Set-Content -Encoding UTF8 $passphrase
+'deputy local passphrase' | Set-Content -Encoding UTF8 $deputyPassphrase
+'medic local passphrase' | Set-Content -Encoding UTF8 $medicPassphrase
 cargo run -q -p astragrid -- init --mission flood-watch --ledger $ledger
 cargo run -q -p astragrid -- identity create --path $key --name lead --role incident_commander --passphrase-file $passphrase
+cargo run -q -p astragrid -- identity create --path $deputyKey --name deputy --role incident_commander --passphrase-file $deputyPassphrase
+cargo run -q -p astragrid -- identity create --path $medicKey --name medic --role operator --passphrase-file $medicPassphrase
 cargo run -q -p astragrid -- identity os-seal-passphrase --input $passphrase --output "$passphrase.oskey"
 cargo run -q -p astragrid -- identity inspect --path $key --passphrase-os-key "$passphrase.oskey"
 cargo run -q -p astragrid -- identity audit --path $key
 cargo run -q -p astragrid -- identity registry-init --registry $registry --authority local-command
 cargo run -q -p astragrid -- identity enroll --registry $registry --identity $key --passphrase-file $passphrase --issued-by local-command
+cargo run -q -p astragrid -- identity enroll --registry $registry --identity $deputyKey --passphrase-file $deputyPassphrase --issued-by bootstrap
+cargo run -q -p astragrid -- identity quorum-propose --registry $registry --output $quorumProposal --change enroll --identity $medicKey --issued-by quorum --required-approvals 2
+cargo run -q -p astragrid -- identity quorum-sign --proposal $quorumProposal --identity $key --passphrase-file $passphrase --output $leadQuorumSignature
+cargo run -q -p astragrid -- identity quorum-sign --proposal $quorumProposal --identity $deputyKey --passphrase-file $deputyPassphrase --output $deputyQuorumSignature
+cargo run -q -p astragrid -- identity quorum-verify --registry $registry --proposal $quorumProposal --signature $leadQuorumSignature --signature $deputyQuorumSignature
+cargo run -q -p astragrid -- identity quorum-apply --registry $registry --proposal $quorumProposal --signature $leadQuorumSignature --signature $deputyQuorumSignature
 cargo run -q -p astragrid -- identity registry-bundle --registry $registry --output ".cache\trust-bundle-$id.json"
 cargo run -q -p astragrid -- identity registry-verify-bundle --input ".cache\trust-bundle-$id.json" --registry $registry
 cargo run -q -p astragrid -- identity registry-import-bundle --registry $registry --input ".cache\trust-bundle-$id.json" --dry-run
@@ -387,6 +404,15 @@ cargo run -q -p astragrid -- setup first-run --root $root --mission flood-watch 
 cargo run -q -p astragrid -- doctor profile --profile "$root\astragrid.profile.json"
 cargo run -q -p astragrid -- ops backup --profile "$root\astragrid.profile.json" --output "$root\data\backups\workspace.sealed.json" --passphrase-file "$root\data\operators\lead.pass"
 cargo run -q -p astragrid -- ops restore --input "$root\data\backups\workspace.sealed.json" --output-dir ".cache\ready-restore" --passphrase-file "$root\data\operators\lead.pass"
+'deputy local passphrase' | Set-Content -Encoding UTF8 "$root\data\operators\deputy.pass"
+'medic local passphrase' | Set-Content -Encoding UTF8 "$root\data\operators\medic.pass"
+cargo run -q -p astragrid -- identity create --path "$root\data\operators\deputy.agkey" --name deputy --role incident_commander --passphrase-file "$root\data\operators\deputy.pass"
+cargo run -q -p astragrid -- identity create --path "$root\data\operators\medic.agkey" --name medic --role operator --passphrase-file "$root\data\operators\medic.pass"
+cargo run -q -p astragrid -- identity enroll --registry "$root\data\operators\operators.agregistry" --identity "$root\data\operators\deputy.agkey" --passphrase-file "$root\data\operators\deputy.pass" --issued-by bootstrap
+cargo run -q -p astragrid -- identity quorum-propose --registry "$root\data\operators\operators.agregistry" --output "$root\data\operators\medic-enroll.proposal.json" --change enroll --identity "$root\data\operators\medic.agkey" --issued-by quorum --required-approvals 2
+cargo run -q -p astragrid -- identity quorum-sign --proposal "$root\data\operators\medic-enroll.proposal.json" --identity "$root\data\operators\lead.agkey" --passphrase-file "$root\data\operators\lead.pass" --output "$root\data\operators\lead.quorum.sig.json"
+cargo run -q -p astragrid -- identity quorum-sign --proposal "$root\data\operators\medic-enroll.proposal.json" --identity "$root\data\operators\deputy.agkey" --passphrase-file "$root\data\operators\deputy.pass" --output "$root\data\operators\deputy.quorum.sig.json"
+cargo run -q -p astragrid -- identity quorum-apply --registry "$root\data\operators\operators.agregistry" --proposal "$root\data\operators\medic-enroll.proposal.json" --signature "$root\data\operators\lead.quorum.sig.json" --signature "$root\data\operators\deputy.quorum.sig.json"
 cargo run -q -p astragrid -- team session-issue --identity "$root\data\operators\lead.agkey" --passphrase-file "$root\data\operators\lead.pass" --registry "$root\data\operators\operators.agregistry" --output "$root\data\operators\lead.session.json" --ttl-minutes 30
 cargo run -q -p astragrid -- team session-verify --session "$root\data\operators\lead.session.json" --registry "$root\data\operators\operators.agregistry"
 cargo run -q -p astragrid -- team pair-create --identity "$root\data\operators\lead.agkey" --passphrase-file "$root\data\operators\lead.pass" --registry "$root\data\operators\operators.agregistry" --device-id field-tablet-01 --device-name "Field Tablet 01" --output "$root\data\operators\field-tablet-01.pairing.json" --ttl-minutes 30

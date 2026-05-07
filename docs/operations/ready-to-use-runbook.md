@@ -103,6 +103,27 @@ passphrase file, approvals when present, peer queue when present, and reports.
 Restore validates each file hash and refuses to overwrite existing files unless `--overwrite` is
 supplied.
 
+## Quorum Operator Enrollment
+
+Bootstrap at least two incident commanders before using quorum-governed registry changes. After
+that, new operator enrollments can require distinct active commander approvals:
+
+```powershell
+'deputy local passphrase' | Set-Content -Encoding UTF8 ops\field\data\operators\deputy.pass
+'medic local passphrase' | Set-Content -Encoding UTF8 ops\field\data\operators\medic.pass
+.\target\release\astragrid.exe identity create --path ops\field\data\operators\deputy.agkey --name deputy --role incident_commander --passphrase-file ops\field\data\operators\deputy.pass
+.\target\release\astragrid.exe identity create --path ops\field\data\operators\medic.agkey --name medic --role operator --passphrase-file ops\field\data\operators\medic.pass
+.\target\release\astragrid.exe identity enroll --registry ops\field\data\operators\operators.agregistry --identity ops\field\data\operators\deputy.agkey --passphrase-file ops\field\data\operators\deputy.pass --issued-by bootstrap
+.\target\release\astragrid.exe identity quorum-propose --registry ops\field\data\operators\operators.agregistry --output ops\field\data\operators\medic-enroll.proposal.json --change enroll --identity ops\field\data\operators\medic.agkey --issued-by quorum --required-approvals 2
+.\target\release\astragrid.exe identity quorum-sign --proposal ops\field\data\operators\medic-enroll.proposal.json --identity ops\field\data\operators\lead.agkey --passphrase-file ops\field\data\operators\lead.pass --output ops\field\data\operators\lead.quorum.sig.json
+.\target\release\astragrid.exe identity quorum-sign --proposal ops\field\data\operators\medic-enroll.proposal.json --identity ops\field\data\operators\deputy.agkey --passphrase-file ops\field\data\operators\deputy.pass --output ops\field\data\operators\deputy.quorum.sig.json
+.\target\release\astragrid.exe identity quorum-verify --registry ops\field\data\operators\operators.agregistry --proposal ops\field\data\operators\medic-enroll.proposal.json --signature ops\field\data\operators\lead.quorum.sig.json --signature ops\field\data\operators\deputy.quorum.sig.json
+.\target\release\astragrid.exe identity quorum-apply --registry ops\field\data\operators\operators.agregistry --proposal ops\field\data\operators\medic-enroll.proposal.json --signature ops\field\data\operators\lead.quorum.sig.json --signature ops\field\data\operators\deputy.quorum.sig.json
+```
+
+The proposal fails closed if the registry changed after proposal creation, if a signature is
+duplicated, if a signer has been revoked, or if the requested registry change is no longer valid.
+
 ## Key Rotation
 
 ```powershell
@@ -155,5 +176,7 @@ Delete only after reviewing the report:
 - Broken pairing grant: `team pair-verify` fails before a device is trusted.
 - Unsigned, tampered, or unauthorized policy pack: `policy-pack verify`, `policy-pack evaluate`, and
   policy-enforced append paths fail before ledger mutation.
+- Stale or under-approved registry proposal: `identity quorum-verify` and `identity quorum-apply`
+  fail before an operator is enrolled or revoked.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

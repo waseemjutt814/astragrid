@@ -35,6 +35,9 @@ gated until those inputs exist.
 - **Signed policy rule packs:** `policy-pack template`, `policy-pack sign`, `policy-pack verify`,
   and `policy-pack evaluate` add compatibility-checked rule bundles, detached signatures,
   registry-verified signers, and enforcement hooks on signed append paths.
+- **Quorum registry changes:** `identity quorum-propose`, `identity quorum-sign`, `identity
+  quorum-verify`, and `identity quorum-apply` bind operator enroll/revoke changes to the current
+  registry digest and require distinct active incident-commander approvals before mutation.
 
 ## A-to-Z Delivery Gates
 
@@ -56,7 +59,7 @@ gated until those inputs exist.
 | N | Offline map tile packs | Map export exists; tile packs need a licensed tile source and pack manifest validation. |
 | O | Operator audit timeline UI | Dashboard has recent events; timeline UI needs grouped audit interactions and export tests. |
 | P | Policy rule pack system | Complete for local operation: policy packs validate schema/compatibility/rules, detached signatures bind the pack digest, registry checks verify active signer authority, and append paths can enforce a verified pack. |
-| Q | Quorum enrollment for operators | Release quorum exists; operator enrollment quorum needs registry admission flow changes. |
+| Q | Quorum enrollment for operators | Complete for local registry changes: proposals bind authority, current registry digest, nonce, change body, and required approval count; verification requires distinct active commander signatures, rejects duplicates/revoked signers/stale registries, and apply mutates only after verification. Remote CA-backed enrollment remains gated. |
 | R | Replication daemon with service hardening | Peer queue worker and supervisor kits exist; replication daemon needs lifecycle hardening. |
 | S | Secure device pairing | Complete for local signed pairing grants: pairing bundles bind device id/name, operator identity, registry digest, expiry, and signature. Network UX and revocation distribution remain future service work. |
 | T | Team roles and permissions | Complete for the team-authenticated signed append path: sessions verify registry status and policy before mutation. Broader service/API command enforcement remains gated on the long-running service boundary. |
@@ -69,9 +72,8 @@ gated until those inputs exist.
 
 ## Next No-Fake Order
 
-1. Add quorum enrollment for sensitive operator changes.
-2. Add federation daemon service hardening and worker watchdog recovery.
-3. Add service-bound team sessions once the long-running API boundary exists.
-4. Add platform package expansion only when signing/notary/release-channel credentials exist.
-5. Add hardware keys, remote CA, notarization, and update channels only when real credentials or real
+1. Add federation daemon service hardening and worker watchdog recovery.
+2. Add service-bound team sessions once the long-running API boundary exists.
+3. Add platform package expansion only when signing/notary/release-channel credentials exist.
+4. Add hardware keys, remote CA, notarization, and update channels only when real credentials or real
    hardware are available.

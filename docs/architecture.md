@@ -117,6 +117,14 @@ entries into a local registry, rejects identity conflicts, and treats revocation
 stale active bundle cannot reactivate a locally revoked operator. The registry remains local
 trust; remote certificate authorities and hardware keys are separate deployment trust roots.
 
+For sensitive local operator changes, `identity quorum-propose` writes a registry-change proposal
+bound to the current registry SHA-256 digest, authority, nonce, change body, and required approval
+count. `identity quorum-sign` signs the canonical proposal digest with an operator key. `identity
+quorum-verify` and `identity quorum-apply` require distinct active incident-commander-or-higher
+signers, reject duplicate signatures, reject revoked or mismatched identities, reject stale
+registry digests, and check that the proposed enroll or revoke operation is still valid before any
+registry mutation is written.
+
 ## Local Team Sessions And Pairing
 
 `team session-issue` creates a signed local session for an enrolled operator. The session includes

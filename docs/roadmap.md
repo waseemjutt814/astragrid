@@ -104,3 +104,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add `policy-pack template`, `sign`, `verify`, and `evaluate` CLI commands.
 - [x] Wire verified policy pack enforcement into `append-signed` and `team append`.
 - [x] Extend acceptance coverage and docs for signed policy pack verification and enforcement.
+
+## Next Wave: Quorum Registry Changes
+
+- [x] Add registry-change proposals for operator enroll/revoke actions with authority, current registry digest, nonce, and required approval count.
+- [x] Add detached proposal signatures through active local operator keys.
+- [x] Add quorum verification that rejects stale registries, duplicate signers, revoked signers, wrong-role signers, and invalid signatures.
+- [x] Add fail-closed apply so registry mutation happens only after verified distinct incident-commander approvals.
+- [x] Extend acceptance coverage and docs for quorum-governed operator enrollment.
