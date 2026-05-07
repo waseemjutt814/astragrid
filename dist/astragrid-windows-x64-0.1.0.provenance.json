@@ -3,14 +3,14 @@
     "package":  "astragrid",
     "version":  "0.1.0",
     "target":  "windows-x64",
-    "generated_at":  "2026-05-07T17:19:29.6855297Z",
+    "generated_at":  "2026-05-07T18:02:02.6421451Z",
     "artifact":  {
                      "path":  "astragrid-windows-x64-0.1.0.zip",
-                     "sha256":  "b4c0de8dfc2272acef342cf896cc2d85db1f0cbdab91e394bd351ece11fa1849"
+                     "sha256":  "4a18825ca22a389607f04e445e44a49b72035f39a4542a5f4ecda57dc52f53f6"
                  },
     "binary":  {
                    "path":  "..\\target\\release\\astragrid.exe",
-                   "sha256":  "32aa80277b4c126bafed4eefd563dc935c487304eff9d7e790ae2cf689237121"
+                   "sha256":  "7f9d87bb41e38b2572a2c549c24758b8302d3c5521aa23f1682622cafb4172a4"
                },
     "included_files":  [
                            "target\\release\\astragrid.exe",
@@ -19,6 +19,7 @@
                            "LICENSE",
                            "tools\\package\\START-ASTRAGRID.cmd",
                            "tools\\package\\VERIFY-ASTRAGRID.ps1",
+                           "tools\\package\\INSTALL-ASTRAGRID.ps1",
                            "tools\\package\\WINDOWS-README.txt"
                        ],
     "toolchain":  {
@@ -26,7 +27,7 @@
                       "rustc":  "rustc 1.94.1 (e408947bf 2026-03-25)"
                   },
     "git":  {
-                "commit":  "70d25a40f94f2f5db61b7a44d339a3786b92b8ad",
+                "commit":  "f85f75bbcd0ca195b54be9183461d2f1333c8a99",
                 "dirty":  false
             }
 }
