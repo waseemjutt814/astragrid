@@ -42,6 +42,7 @@ and a CLI.
 - Deterministic recommendation rules that emit verified evidence bundles.
 - Structured model recommendation adapter that only emits verified evidence bundles.
 - Authenticated one-shot TCP peer ledger snapshots.
+- Hardened authenticated federation daemon with health JSON and JSONL audit.
 - Multi-peer sync planning from a peer manifest.
 - Durable SQLite peer sync queue with retries and append-only apply.
 - Finite-cycle or daemon-mode peer queue worker.

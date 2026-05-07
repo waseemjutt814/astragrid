@@ -120,3 +120,12 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add capped restart enforcement with nonzero exit recovery and fail-closed exhausted-budget reporting.
 - [x] Add parser and executable tests for watchdog recovery and failure paths.
 - [x] Extend acceptance coverage and docs for live worker recovery.
+
+## Next Wave: Federation Daemon Service Hardening
+
+- [x] Add `net serve-daemon` for authenticated ledger snapshot service runs.
+- [x] Verify local ledger integrity before binding the listener.
+- [x] Add finite `--max-requests` smoke mode and optional idle-timeout shutdown.
+- [x] Add health JSON and JSONL audit output for daemon lifecycle and peer requests.
+- [x] Add parser and executable tests for daemon serving, health output, audit output, and invalid config.
+- [x] Extend acceptance coverage and docs for hardened federation serving.

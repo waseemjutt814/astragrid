@@ -71,6 +71,14 @@ pub fn serve_ledger_once_with_listener(
     shared_key: &[u8],
 ) -> Result<(), NetError> {
     let (stream, _) = listener.accept()?;
+    serve_ledger_connection(stream, ledger, shared_key)
+}
+
+pub fn serve_ledger_connection(
+    stream: TcpStream,
+    ledger: &MissionLedger,
+    shared_key: &[u8],
+) -> Result<(), NetError> {
     handle_peer(stream, ledger, shared_key)
 }
 

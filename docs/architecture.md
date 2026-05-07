@@ -218,7 +218,11 @@ Diverged ledgers fail closed and require operator resolution.
 `astragrid-net` provides an authenticated one-shot TCP snapshot protocol. A client and server
 share a local secret, exchange challenge MACs, and then transfer a verified ledger snapshot as
 JSON. This gives sync a real transport without pretending to solve full multi-peer replication.
-The CLI can also read a peer manifest and produce one sync plan per peer.
+The CLI can also read a peer manifest and produce one sync plan per peer. `net serve-daemon`
+hardens the same authenticated snapshot path for longer service runs: it verifies the local ledger
+before binding, accepts requests without shelling out, keeps bad peer requests isolated from the
+listener, writes a health JSON file, writes JSONL audit events, supports finite `--max-requests`
+smoke runs, and can stop after an explicit idle timeout.
 
 ## Durable Peer Queue
 

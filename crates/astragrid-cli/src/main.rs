@@ -22,7 +22,10 @@ use astragrid_evidence::{EvidenceBundle, EvidenceItem, Recommendation};
 use astragrid_geo::GeoFeatureSet;
 use astragrid_harvest::{HarvestRequest, SourceProfile, harvest_geojson, harvest_profile};
 use astragrid_map::{MapConsoleDocument, MapDocument};
-use astragrid_net::{PeerEndpoint, fetch_ledger_snapshot, plan_multi_peer_sync, serve_ledger_once};
+use astragrid_net::{
+    PeerEndpoint, fetch_ledger_snapshot, plan_multi_peer_sync, serve_ledger_connection,
+    serve_ledger_once,
+};
 use astragrid_oskey::OsSealedSecret;
 use astragrid_policy_pack::{
     PolicyRulePack, PolicyRulePackSignature, PolicyRulePackSignatureReport,
@@ -906,6 +909,25 @@ enum NetCommands {
         ledger: PathBuf,
         #[arg(long)]
         shared_key_file: PathBuf,
+    },
+    /// Run a hardened authenticated ledger snapshot daemon.
+    ServeDaemon {
+        #[arg(long, default_value = "127.0.0.1:17655")]
+        bind: String,
+        #[arg(long, default_value = "data/mission.agl")]
+        ledger: PathBuf,
+        #[arg(long)]
+        shared_key_file: PathBuf,
+        #[arg(long)]
+        health_file: Option<PathBuf>,
+        #[arg(long)]
+        audit_log: Option<PathBuf>,
+        /// Stop after this many accepted connections. Omit for long-running mode.
+        #[arg(long)]
+        max_requests: Option<u32>,
+        /// Stop after idle seconds. Use 0 for no idle stop.
+        #[arg(long, default_value_t = 0)]
+        idle_timeout_seconds: u64,
     },
     /// Fetch a verified ledger snapshot from a peer and write it as JSON events.
     Fetch {
@@ -2389,6 +2411,23 @@ fn main() -> Result<()> {
                     "addr": addr.to_string(),
                 }))
             }
+            NetCommands::ServeDaemon {
+                bind,
+                ledger,
+                shared_key_file,
+                health_file,
+                audit_log,
+                max_requests,
+                idle_timeout_seconds,
+            } => print_json(&run_federation_daemon(FederationDaemonRequest {
+                bind,
+                ledger,
+                shared_key_file,
+                health_file,
+                audit_log,
+                max_requests,
+                idle_timeout_seconds,
+            })?),
             NetCommands::Fetch {
                 addr,
                 shared_key_file,
@@ -3447,6 +3486,42 @@ struct WorkerWatchdogRequest {
     success_exit_code: i32,
 }
 
+struct FederationDaemonRequest {
+    bind: String,
+    ledger: PathBuf,
+    shared_key_file: PathBuf,
+    health_file: Option<PathBuf>,
+    audit_log: Option<PathBuf>,
+    max_requests: Option<u32>,
+    idle_timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct FederationDaemonReport {
+    healthy: bool,
+    status: String,
+    bind: String,
+    local_addr: String,
+    ledger: PathBuf,
+    ledger_sha256: String,
+    accepted_requests: u32,
+    served_requests: u32,
+    failed_requests: u32,
+    max_requests: Option<u32>,
+    idle_timeout_seconds: u64,
+    health_file: Option<PathBuf>,
+    audit_log: Option<PathBuf>,
+    last_error: Option<String>,
+}
+
+struct FederationHealthSnapshot<'a> {
+    status: &'a str,
+    accepted_requests: u32,
+    served_requests: u32,
+    failed_requests: u32,
+    last_error: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct WorkerWatchdogReport {
     healthy: bool,
@@ -3656,6 +3731,238 @@ struct DevicePairingVerification {
     checks: Vec<Value>,
 }
 
+fn run_federation_daemon(request: FederationDaemonRequest) -> Result<FederationDaemonReport> {
+    validate_watchdog_value("bind", &request.bind)?;
+    if let Some(max_requests) = request.max_requests
+        && max_requests == 0
+    {
+        bail!("federation daemon max requests must be greater than zero");
+    }
+    let shared_key = read_passphrase_file(&request.shared_key_file)?;
+    let ledger = MissionLedger::open(&request.ledger);
+    let verification = ledger.verify()?;
+    if !verification.valid {
+        bail!(
+            "federation daemon refuses corrupt local ledger: {:?}",
+            verification.failures
+        );
+    }
+    let ledger_sha256 = sha256_file_hex(&request.ledger)?;
+    let listener = TcpListener::bind(&request.bind)
+        .with_context(|| format!("failed to bind federation daemon to {}", request.bind))?;
+    listener.set_nonblocking(true)?;
+    let local_addr = listener.local_addr()?.to_string();
+    let mut accepted_requests = 0_u32;
+    let mut served_requests = 0_u32;
+    let mut failed_requests = 0_u32;
+    let mut last_error = None;
+    let mut last_activity = Instant::now();
+
+    write_federation_health(
+        &request,
+        &local_addr,
+        &ledger_sha256,
+        FederationHealthSnapshot {
+            status: "listening",
+            accepted_requests: 0,
+            served_requests: 0,
+            failed_requests: 0,
+            last_error: None,
+        },
+    )?;
+    write_optional_jsonl(
+        request.audit_log.as_ref(),
+        json!({
+            "event": "federation_daemon_started",
+            "timestamp": OffsetDateTime::now_utc().to_string(),
+            "bind": &request.bind,
+            "local_addr": &local_addr,
+            "ledger": &request.ledger,
+            "ledger_sha256": &ledger_sha256,
+            "max_requests": request.max_requests,
+            "idle_timeout_seconds": request.idle_timeout_seconds,
+        }),
+    )?;
+
+    loop {
+        if request
+            .max_requests
+            .is_some_and(|max_requests| accepted_requests >= max_requests)
+        {
+            break;
+        }
+        if request.idle_timeout_seconds > 0
+            && last_activity.elapsed() >= StdDuration::from_secs(request.idle_timeout_seconds)
+        {
+            write_optional_jsonl(
+                request.audit_log.as_ref(),
+                json!({
+                    "event": "federation_daemon_idle_timeout",
+                    "timestamp": OffsetDateTime::now_utc().to_string(),
+                    "local_addr": &local_addr,
+                    "accepted_requests": accepted_requests,
+                }),
+            )?;
+            break;
+        }
+
+        match listener.accept() {
+            Ok((stream, peer_addr)) => {
+                accepted_requests = accepted_requests.saturating_add(1);
+                last_activity = Instant::now();
+                write_optional_jsonl(
+                    request.audit_log.as_ref(),
+                    json!({
+                        "event": "peer_request_started",
+                        "timestamp": OffsetDateTime::now_utc().to_string(),
+                        "peer_addr": peer_addr.to_string(),
+                        "accepted_requests": accepted_requests,
+                    }),
+                )?;
+                match serve_ledger_connection(stream, &ledger, &shared_key) {
+                    Ok(()) => {
+                        served_requests = served_requests.saturating_add(1);
+                        write_optional_jsonl(
+                            request.audit_log.as_ref(),
+                            json!({
+                                "event": "peer_request_served",
+                                "timestamp": OffsetDateTime::now_utc().to_string(),
+                                "peer_addr": peer_addr.to_string(),
+                                "served_requests": served_requests,
+                            }),
+                        )?;
+                    }
+                    Err(error) => {
+                        failed_requests = failed_requests.saturating_add(1);
+                        let error = error.to_string();
+                        last_error = Some(error.clone());
+                        write_optional_jsonl(
+                            request.audit_log.as_ref(),
+                            json!({
+                                "event": "peer_request_failed",
+                                "timestamp": OffsetDateTime::now_utc().to_string(),
+                                "peer_addr": peer_addr.to_string(),
+                                "failed_requests": failed_requests,
+                                "error": error,
+                            }),
+                        )?;
+                    }
+                }
+                write_federation_health(
+                    &request,
+                    &local_addr,
+                    &ledger_sha256,
+                    FederationHealthSnapshot {
+                        status: "listening",
+                        accepted_requests,
+                        served_requests,
+                        failed_requests,
+                        last_error: last_error.as_deref(),
+                    },
+                )?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(StdDuration::from_millis(50));
+            }
+            Err(error) => {
+                let error = error.to_string();
+                last_error = Some(error.clone());
+                write_optional_jsonl(
+                    request.audit_log.as_ref(),
+                    json!({
+                        "event": "federation_daemon_accept_failed",
+                        "timestamp": OffsetDateTime::now_utc().to_string(),
+                        "local_addr": &local_addr,
+                        "error": error,
+                    }),
+                )?;
+                break;
+            }
+        }
+    }
+
+    let healthy = last_error.is_none() || served_requests > 0;
+    let status = if healthy { "stopped" } else { "failed" };
+    write_federation_health(
+        &request,
+        &local_addr,
+        &ledger_sha256,
+        FederationHealthSnapshot {
+            status,
+            accepted_requests,
+            served_requests,
+            failed_requests,
+            last_error: last_error.as_deref(),
+        },
+    )?;
+    write_optional_jsonl(
+        request.audit_log.as_ref(),
+        json!({
+            "event": "federation_daemon_stopped",
+            "timestamp": OffsetDateTime::now_utc().to_string(),
+            "local_addr": &local_addr,
+            "accepted_requests": accepted_requests,
+            "served_requests": served_requests,
+            "failed_requests": failed_requests,
+            "status": status,
+            "last_error": &last_error,
+        }),
+    )?;
+
+    Ok(FederationDaemonReport {
+        healthy,
+        status: status.to_owned(),
+        bind: request.bind,
+        local_addr,
+        ledger: request.ledger,
+        ledger_sha256,
+        accepted_requests,
+        served_requests,
+        failed_requests,
+        max_requests: request.max_requests,
+        idle_timeout_seconds: request.idle_timeout_seconds,
+        health_file: request.health_file,
+        audit_log: request.audit_log,
+        last_error,
+    })
+}
+
+fn write_federation_health(
+    request: &FederationDaemonRequest,
+    local_addr: &str,
+    ledger_sha256: &str,
+    snapshot: FederationHealthSnapshot<'_>,
+) -> Result<()> {
+    let Some(path) = request.health_file.as_ref() else {
+        return Ok(());
+    };
+    write_json_file(
+        path,
+        &json!({
+            "schema": 1,
+            "status": snapshot.status,
+            "updated_at": OffsetDateTime::now_utc().to_string(),
+            "bind": &request.bind,
+            "local_addr": local_addr,
+            "ledger": &request.ledger,
+            "ledger_sha256": ledger_sha256,
+            "accepted_requests": snapshot.accepted_requests,
+            "served_requests": snapshot.served_requests,
+            "failed_requests": snapshot.failed_requests,
+            "max_requests": request.max_requests,
+            "idle_timeout_seconds": request.idle_timeout_seconds,
+            "last_error": snapshot.last_error,
+        }),
+    )
+}
+
+fn write_optional_jsonl(path: Option<&PathBuf>, event: Value) -> Result<()> {
+    if let Some(path) = path {
+        write_jsonl_event(path, event)?;
+    }
+    Ok(())
+}
+
 fn run_worker_watchdog(request: WorkerWatchdogRequest) -> Result<WorkerWatchdogReport> {
     validate_watchdog_value("name", &request.name)?;
     validate_watchdog_value("command", &request.command)?;
@@ -3834,11 +4141,20 @@ fn validate_watchdog_value(field: &str, value: &str) -> Result<()> {
 }
 
 fn write_watchdog_audit(path: &PathBuf, event: Value) -> Result<()> {
+    write_jsonl_event(path, event)
+}
+
+fn write_jsonl_event(path: &PathBuf, event: Value) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
-        .with_context(|| format!("failed to open watchdog audit log {}", path.display()))?;
+        .with_context(|| format!("failed to open JSONL audit log {}", path.display()))?;
     file.write_all(serde_json::to_string(&event)?.as_bytes())?;
     file.write_all(b"\n")?;
     file.flush()?;
@@ -5067,6 +5383,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "signed policy rule pack",
             "quorum registry enrollment",
             "worker watchdog recovery",
+            "hardened federation daemon",
             "package provenance"
         ]
     });
@@ -5179,6 +5496,12 @@ try {{
     $watchdogScript = Join-Path $Run 'watchdog-worker.ps1'
     $watchdogState = Join-Path $Run 'watchdog-worker.state'
     $watchdogAudit = Join-Path $Run 'watchdog-audit.jsonl'
+    $federationKey = Join-Path $Run 'federation.key'
+    $federationOut = Join-Path $Run 'federation-events.json'
+    $federationHealth = Join-Path $Run 'federation-health.json'
+    $federationAudit = Join-Path $Run 'federation-audit.jsonl'
+    $federationPort = Get-Random -Minimum 20000 -Maximum 30000
+    $federationBind = "127.0.0.1:$federationPort"
 
     'acceptance local passphrase' | Set-Content -Encoding UTF8 $passphrase
     'acceptance deputy passphrase' | Set-Content -Encoding UTF8 $deputyPassphrase
@@ -5186,6 +5509,7 @@ try {{
     '{{"water_level_m":5.2}}' | Set-Content -Encoding UTF8 $payload
     '{{"team_id":"alpha"}}' | Set-Content -Encoding UTF8 $dispatchPayload
     '{{"note":"vault runtime append"}}' | Set-Content -Encoding UTF8 $vaultPayload
+    'acceptance federation shared key' | Set-Content -Encoding UTF8 $federationKey
 @'
 param([string]$State)
 if (-not (Test-Path $State)) {{
@@ -5210,6 +5534,23 @@ exit 0
     Invoke-AstraGrid supervisor watchdog-run --name acceptance-worker --command powershell --arg -NoProfile --arg -ExecutionPolicy --arg Bypass --arg -File --arg $watchdogScript --arg $watchdogState --audit-log $watchdogAudit --max-restarts 2 --restart-delay-ms 0
 
     Invoke-AstraGrid init --mission flood-watch --ledger $ledger
+    $federationServer = Start-Job -ScriptBlock {{
+        param($ProjectRoot, $Bind, $Ledger, $SharedKey, $Health, $Audit)
+        Set-Location $ProjectRoot
+        cargo run -q -p astragrid -- net serve-daemon --bind $Bind --ledger $Ledger --shared-key-file $SharedKey --health-file $Health --audit-log $Audit --max-requests 1 --idle-timeout-seconds 15
+        if ($LASTEXITCODE -ne 0) {{ throw "federation daemon exited with code $LASTEXITCODE" }}
+    }} -ArgumentList $ProjectRoot, $federationBind, $ledger, $federationKey, $federationHealth, $federationAudit
+    $deadline = (Get-Date).AddSeconds(30)
+    while (-not (Test-Path $federationHealth)) {{
+        if ((Get-Date) -gt $deadline) {{ throw 'federation daemon did not write health file' }}
+        Start-Sleep -Milliseconds 200
+    }}
+    Invoke-AstraGrid net fetch --addr $federationBind --shared-key-file $federationKey --output $federationOut
+    Receive-Job $federationServer -Wait -ErrorAction Stop
+    $federationHealthJson = Get-Content -Raw $federationHealth | ConvertFrom-Json
+    if ($federationHealthJson.status -ne 'stopped') {{ throw "unexpected federation daemon status: $($federationHealthJson.status)" }}
+    if ($federationHealthJson.served_requests -lt 1) {{ throw 'federation daemon did not serve a peer request' }}
+    if (-not (Select-String -LiteralPath $federationAudit -Pattern 'peer_request_served' -Quiet)) {{ throw 'federation audit did not record served peer request' }}
     Invoke-AstraGrid identity create --path $identity --name lead --role incident_commander --passphrase-file $passphrase
     Invoke-AstraGrid identity create --path $deputyIdentity --name deputy --role incident_commander --passphrase-file $deputyPassphrase
     Invoke-AstraGrid identity create --path $medicIdentity --name medic --role operator --passphrase-file $medicPassphrase
@@ -6746,7 +7087,10 @@ mod tests {
     use std::{
         fs,
         io::Write,
+        net::TcpListener as TestTcpListener,
         path::{Path, PathBuf},
+        thread,
+        time::Duration as TestDuration,
     };
 
     use clap::Parser;
@@ -6755,22 +7099,23 @@ mod tests {
 
     use super::{
         ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands,
-        DevicePairingRequest, DoctorCommands, FirstRunRequest, GeoCommands, IdentityCommands,
-        OpsBundleRequest, OpsCommands, PeerQueueCommands, PolicyPackCommands, ProvenanceCommands,
-        ReadinessGateRequest, RecommendCommands, RegistryQuorumChangeKind,
-        RegistryQuorumProposalRequest, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
-        RestoreRequest, RotateOperatorRequest, SetupCommands, TeamAppendRequest,
-        TeamSessionIssueRequest, VaultAppendRequest, VaultCommands, WorkerWatchdogRequest,
-        WorkspaceProfile, acceptance_scenario, apply_registry_quorum_proposal,
-        authorize_team_action, build_registry_trust_bundle, create_device_pairing,
-        create_registry_quorum_proposal, default_signature_output_path, evaluate_policy_pack_file,
-        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
-        inject_meta_refresh, issue_team_session, read_payload, render_acceptance_script,
+        DevicePairingRequest, DoctorCommands, FederationDaemonRequest, FirstRunRequest,
+        GeoCommands, IdentityCommands, NetCommands, OpsBundleRequest, OpsCommands,
+        PeerQueueCommands, PolicyPackCommands, ProvenanceCommands, ReadinessGateRequest,
+        RecommendCommands, RegistryQuorumChangeKind, RegistryQuorumProposalRequest,
+        ReleaseCustodyPackRequest, ReleaseEvidencePackRequest, RestoreRequest,
+        RotateOperatorRequest, SetupCommands, TeamAppendRequest, TeamSessionIssueRequest,
+        VaultAppendRequest, VaultCommands, WorkerWatchdogRequest, WorkspaceProfile,
+        acceptance_scenario, apply_registry_quorum_proposal, authorize_team_action,
+        build_registry_trust_bundle, create_device_pairing, create_registry_quorum_proposal,
+        default_signature_output_path, evaluate_policy_pack_file, export_ops_bundle,
+        http_request_path, http_response, import_registry_trust_bundle, inject_meta_refresh,
+        issue_team_session, read_json_file, read_payload, render_acceptance_script,
         render_default_launcher, restore_workspace_backup, rotate_operator_key,
-        run_artifact_retention, run_first_run_setup, run_profile_doctor, run_readiness_gate,
-        run_worker_watchdog, sha256_file_hex, sign_registry_quorum_proposal, team_append_signed,
-        vault_append, vault_init, vault_tail, vault_verify, verify_device_pairing_file,
-        verify_policy_pack_file, verify_registry_quorum_proposal_file,
+        run_artifact_retention, run_federation_daemon, run_first_run_setup, run_profile_doctor,
+        run_readiness_gate, run_worker_watchdog, sha256_file_hex, sign_registry_quorum_proposal,
+        team_append_signed, vault_append, vault_init, vault_tail, vault_verify,
+        verify_device_pairing_file, verify_policy_pack_file, verify_registry_quorum_proposal_file,
         verify_registry_trust_bundle, verify_team_session_file, write_acceptance_pack,
         write_release_custody_pack, write_release_evidence_pack, write_workspace_backup,
     };
@@ -7218,6 +7563,132 @@ mod tests {
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_net_serve_daemon_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "net",
+            "serve-daemon",
+            "--bind",
+            "127.0.0.1:17655",
+            "--ledger",
+            "data/mission.agl",
+            "--shared-key-file",
+            "secrets/peer.key",
+            "--health-file",
+            "ops/federation-health.json",
+            "--audit-log",
+            "ops/federation-audit.jsonl",
+            "--max-requests",
+            "1",
+            "--idle-timeout-seconds",
+            "5",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Net {
+                command:
+                    NetCommands::ServeDaemon {
+                        bind,
+                        ledger,
+                        shared_key_file,
+                        health_file,
+                        audit_log,
+                        max_requests,
+                        idle_timeout_seconds,
+                    },
+            } => {
+                assert_eq!(bind, "127.0.0.1:17655");
+                assert_eq!(ledger, PathBuf::from("data/mission.agl"));
+                assert_eq!(shared_key_file, PathBuf::from("secrets/peer.key"));
+                assert_eq!(
+                    health_file,
+                    Some(PathBuf::from("ops/federation-health.json"))
+                );
+                assert_eq!(audit_log, Some(PathBuf::from("ops/federation-audit.jsonl")));
+                assert_eq!(max_requests, Some(1));
+                assert_eq!(idle_timeout_seconds, 5);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn federation_daemon_serves_snapshot_and_writes_health() {
+        let dir = tempdir().unwrap();
+        let ledger_path = dir.path().join("mission.agl");
+        let shared_key_path = dir.path().join("peer.key");
+        let health_path = dir.path().join("federation-health.json");
+        let audit_path = dir.path().join("federation-audit.jsonl");
+        fs::write(&shared_key_path, b"shared\n").unwrap();
+        let ledger = astragrid_core::MissionLedger::open(&ledger_path);
+        ledger
+            .append(astragrid_core::CommandRequest::new(
+                astragrid_core::Actor::new("kernel", astragrid_core::Role::System),
+                astragrid_core::Action::OpenMission,
+                "federation-ready",
+                astragrid_core::Priority::Elevated,
+                json!({"mission": "federation-ready"}),
+            ))
+            .unwrap();
+        let probe = TestTcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        let request = FederationDaemonRequest {
+            bind: addr.to_string(),
+            ledger: ledger_path.clone(),
+            shared_key_file: shared_key_path,
+            health_file: Some(health_path.clone()),
+            audit_log: Some(audit_path.clone()),
+            max_requests: Some(1),
+            idle_timeout_seconds: 5,
+        };
+        let handle = thread::spawn(move || run_federation_daemon(request).unwrap());
+        for _ in 0..100 {
+            if health_path.exists() {
+                break;
+            }
+            thread::sleep(TestDuration::from_millis(50));
+        }
+        assert!(health_path.exists());
+
+        let snapshot = astragrid_net::fetch_ledger_snapshot(addr, b"shared").unwrap();
+        let report = handle.join().unwrap();
+
+        assert!(snapshot.verification.valid);
+        assert_eq!(snapshot.events.len(), 1);
+        assert!(report.healthy);
+        assert_eq!(report.accepted_requests, 1);
+        assert_eq!(report.served_requests, 1);
+        assert_eq!(report.failed_requests, 0);
+        let health: serde_json::Value = read_json_file(&health_path).unwrap();
+        assert_eq!(health["status"], "stopped");
+        assert_eq!(health["served_requests"], 1);
+        let audit = fs::read_to_string(audit_path).unwrap();
+        assert!(audit.contains("\"event\":\"federation_daemon_started\""));
+        assert!(audit.contains("\"event\":\"peer_request_served\""));
+        assert!(audit.contains("\"event\":\"federation_daemon_stopped\""));
+    }
+
+    #[test]
+    fn federation_daemon_rejects_zero_max_requests() {
+        let dir = tempdir().unwrap();
+        let error = run_federation_daemon(FederationDaemonRequest {
+            bind: "127.0.0.1:0".to_owned(),
+            ledger: dir.path().join("missing.agl"),
+            shared_key_file: dir.path().join("missing.key"),
+            health_file: None,
+            audit_log: None,
+            max_requests: Some(0),
+            idle_timeout_seconds: 0,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("max requests"));
     }
 
     #[test]

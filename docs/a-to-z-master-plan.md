@@ -41,6 +41,9 @@ gated until those inputs exist.
 - **Worker watchdog recovery:** `supervisor watchdog-run` starts a real child process, writes JSONL
   audit records, restarts failed workers within a capped budget, reports recovery, and fails closed
   when the worker never reaches the expected exit code.
+- **Federation daemon hardening:** `net serve-daemon` runs the authenticated ledger snapshot
+  protocol as a health-reported service loop with JSONL audit, request isolation, finite smoke mode,
+  and idle-timeout shutdown.
 
 ## A-to-Z Delivery Gates
 
@@ -51,7 +54,7 @@ gated until those inputs exist.
 | C | Remote certificate authority | Not started until a real CA root, enrollment policy, and rotation procedure exist. |
 | D | Encrypted ledgers at rest | Complete for the vault runtime path: `vault init`, `vault append`, `vault verify`, and `vault tail` operate on a sealed ledger file as the primary at-rest artifact. Signed vault append remains a future hardening item. |
 | E | Automatic conflict merge for divergent ledgers | Divergence is detected; automatic merge needs deterministic conflict policy and replay proofs. |
-| F | Long-running secure network service | One-shot authenticated networking and supervised workers exist; daemon service needs hardened listener lifecycle and service tests. |
+| F | Long-running secure network service | Complete for local authenticated snapshot serving: `net serve-daemon` verifies the ledger before bind, serves authenticated peers through the real protocol, isolates failed peer requests, writes health/audit files, supports finite smoke runs, and has executable daemon tests. Multi-host deployment hardening remains future work. |
 | G | `astragrid-ui` operator console | HTML exports and loopback serving exist; full app waits for a real UI runtime without heavy placeholder dependencies. |
 | H | Hardware-backed keys | OS key sealing exists; TPM/YubiKey completion needs real hardware provider implementations and operator tests. |
 | I | Windows installer and package smoke | Current wave adds script installer, packaged installer, manifest, and smoke automation; MSI/winget/Scoop require release-channel decisions. |
@@ -75,8 +78,7 @@ gated until those inputs exist.
 
 ## Next No-Fake Order
 
-1. Add federation daemon service hardening.
-2. Add service-bound team sessions once the long-running API boundary exists.
-3. Add platform package expansion only when signing/notary/release-channel credentials exist.
-4. Add hardware keys, remote CA, notarization, and update channels only when real credentials or real
+1. Add service-bound team sessions once the long-running API boundary exists.
+2. Add platform package expansion only when signing/notary/release-channel credentials exist.
+3. Add hardware keys, remote CA, notarization, and update channels only when real credentials or real
    hardware are available.

@@ -154,6 +154,20 @@ Wrap local long-running workers with a capped restart watchdog when you need a r
 The watchdog writes one JSON object per line for every attempt, restart, recovery, or final
 failure. It exits with failure when the restart budget is exhausted.
 
+## Federation Daemon
+
+Run the authenticated local ledger snapshot service with explicit health and audit outputs:
+
+```powershell
+.\target\release\astragrid.exe net serve-daemon --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl
+```
+
+For package or field smoke tests, add finite shutdown controls:
+
+```powershell
+.\target\release\astragrid.exe net serve-daemon --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl --max-requests 1 --idle-timeout-seconds 15
+```
+
 ## Update And Release Evidence
 
 ```powershell
@@ -191,5 +205,7 @@ Delete only after reviewing the report:
   fail before an operator is enrolled or revoked.
 - Exhausted worker recovery: `supervisor watchdog-run` exits failed and leaves the attempt history
   in the JSONL audit log.
+- Federation daemon startup failure: `net serve-daemon` refuses corrupt ledgers before binding and
+  writes health/audit lifecycle evidence when configured.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

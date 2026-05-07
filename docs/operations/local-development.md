@@ -186,6 +186,24 @@ To process the queued job, run a one-shot peer server in another terminal:
 cargo run -q -p astragrid -- net serve-once --bind 127.0.0.1:17655 --ledger $peerLedger --shared-key-file $sharedKey
 ```
 
+For a hardened local federation service loop, use `serve-daemon` with health and audit outputs.
+Use finite `--max-requests` during local smoke tests and omit it for long-running service mode:
+
+```powershell
+$federationHealth = ".cache\federation-health-$id.json"
+$federationAudit = ".cache\federation-audit-$id.jsonl"
+$federationServer = Start-Job -ScriptBlock {
+    param($ProjectRoot, $peerLedger, $sharedKey, $health, $audit)
+    Set-Location $ProjectRoot
+    cargo run -q -p astragrid -- net serve-daemon --bind 127.0.0.1:17656 --ledger $peerLedger --shared-key-file $sharedKey --health-file $health --audit-log $audit --max-requests 1 --idle-timeout-seconds 15
+} -ArgumentList (Get-Location).Path, $peerLedger, $sharedKey, $federationHealth, $federationAudit
+Start-Sleep -Seconds 2
+cargo run -q -p astragrid -- net fetch --addr 127.0.0.1:17656 --shared-key-file $sharedKey --output ".cache\federation-events-$id.json"
+Receive-Job $federationServer -Wait
+Get-Content $federationHealth
+Get-Content $federationAudit
+```
+
 Then process the queue:
 
 ```powershell
