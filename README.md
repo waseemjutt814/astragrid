@@ -78,6 +78,7 @@ and a CLI.
 - Deterministic supervisor artifact generation for peer queue workers.
 - Watchdog recovery runner for local long-running workers.
 - Peer worker service kits with generated install and uninstall wrappers.
+- Federation daemon service kits with generated install and uninstall wrappers.
 - Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.
 - `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `policy-pack`, `identity`, `team`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
@@ -135,7 +136,7 @@ AstraGrid is built around four non-negotiables:
 - `crates/astragrid-scenario`: executable mission acceptance scenarios.
 - `crates/astragrid-state`: current mission state projection from ledger events.
 - `crates/astragrid-store`: SQLite mission index for verified ledgers.
-- `crates/astragrid-supervisor`: service manager artifacts for long-running workers.
+- `crates/astragrid-supervisor`: service manager artifacts for peer workers and federation daemons.
 - `crates/astragrid-sync`: offline ledger comparison and conflict detection.
 - `crates/astragrid-sync-queue`: durable peer sync queue and retry worker.
 - `crates/astragrid-workflow`: evidence-to-command workflow drafting.

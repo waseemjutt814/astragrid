@@ -14,6 +14,19 @@ pub struct PeerWorkerSupervisorSpec {
     pub interval_seconds: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDaemonSupervisorSpec {
+    pub binary: PathBuf,
+    pub working_directory: PathBuf,
+    pub bind: String,
+    pub ledger: PathBuf,
+    pub shared_key_file: PathBuf,
+    pub health_file: PathBuf,
+    pub audit_log: PathBuf,
+    pub max_requests: Option<u32>,
+    pub idle_timeout_seconds: u64,
+}
+
 impl PeerWorkerSupervisorSpec {
     pub fn validate(&self) -> Result<(), SupervisorError> {
         validate_path("binary", &self.binary)?;
@@ -60,6 +73,53 @@ impl PeerWorkerSupervisorSpec {
     }
 }
 
+impl FederationDaemonSupervisorSpec {
+    pub fn validate(&self) -> Result<(), SupervisorError> {
+        validate_path("binary", &self.binary)?;
+        validate_path("working_directory", &self.working_directory)?;
+        validate_text("bind", &self.bind)?;
+        if self.bind.trim().is_empty() {
+            return Err(SupervisorError::InvalidValue(
+                "bind cannot be empty".to_owned(),
+            ));
+        }
+        validate_path("ledger", &self.ledger)?;
+        validate_path("shared_key_file", &self.shared_key_file)?;
+        validate_path("health_file", &self.health_file)?;
+        validate_path("audit_log", &self.audit_log)?;
+        if self.max_requests == Some(0) {
+            return Err(SupervisorError::InvalidValue(
+                "max_requests must be greater than zero when set".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn daemon_args(&self) -> Result<Vec<String>, SupervisorError> {
+        self.validate()?;
+        let mut args = vec![
+            "net".to_owned(),
+            "serve-daemon".to_owned(),
+            "--bind".to_owned(),
+            self.bind.clone(),
+            "--ledger".to_owned(),
+            self.ledger.to_string_lossy().into_owned(),
+            "--shared-key-file".to_owned(),
+            self.shared_key_file.to_string_lossy().into_owned(),
+            "--health-file".to_owned(),
+            self.health_file.to_string_lossy().into_owned(),
+            "--audit-log".to_owned(),
+            self.audit_log.to_string_lossy().into_owned(),
+            "--idle-timeout-seconds".to_owned(),
+            self.idle_timeout_seconds.to_string(),
+        ];
+        if let Some(max_requests) = self.max_requests {
+            args.extend(["--max-requests".to_owned(), max_requests.to_string()]);
+        }
+        Ok(args)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemdPeerWorkerUnit {
     pub unit_name: String,
@@ -67,6 +127,15 @@ pub struct SystemdPeerWorkerUnit {
     pub user: Option<String>,
     pub restart_seconds: u32,
     pub spec: PeerWorkerSupervisorSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemdFederationDaemonUnit {
+    pub unit_name: String,
+    pub description: String,
+    pub user: Option<String>,
+    pub restart_seconds: u32,
+    pub spec: FederationDaemonSupervisorSpec,
 }
 
 impl SystemdPeerWorkerUnit {
@@ -152,16 +221,144 @@ impl SystemdPeerWorkerUnit {
     }
 }
 
+impl SystemdFederationDaemonUnit {
+    pub fn render(&self) -> Result<String, SupervisorError> {
+        validate_name("unit_name", &self.unit_name)?;
+        validate_text("description", &self.description)?;
+        if let Some(user) = &self.user {
+            validate_name("user", user)?;
+        }
+        if self.restart_seconds == 0 {
+            return Err(SupervisorError::InvalidValue(
+                "restart_seconds must be greater than zero".to_owned(),
+            ));
+        }
+
+        let mut args = vec![self.spec.binary.to_string_lossy().into_owned()];
+        args.extend(self.spec.daemon_args()?);
+        let exec_start = args
+            .iter()
+            .map(|arg| systemd_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut lines = vec![
+            "[Unit]".to_owned(),
+            format!("Description={}", self.description),
+            "After=network-online.target".to_owned(),
+            "Wants=network-online.target".to_owned(),
+            String::new(),
+            "[Service]".to_owned(),
+            "Type=simple".to_owned(),
+            format!(
+                "WorkingDirectory={}",
+                systemd_quote(&self.spec.working_directory.to_string_lossy())
+            ),
+            format!("ExecStart={exec_start}"),
+            "Restart=always".to_owned(),
+            format!("RestartSec={}", self.restart_seconds),
+        ];
+        if let Some(user) = &self.user {
+            lines.push(format!("User={user}"));
+        }
+        lines.extend([
+            String::new(),
+            "[Install]".to_owned(),
+            "WantedBy=multi-user.target".to_owned(),
+            String::new(),
+        ]);
+        Ok(lines.join("\n"))
+    }
+
+    pub fn render_install_script(&self) -> Result<String, SupervisorError> {
+        validate_name("unit_name", &self.unit_name)?;
+        self.spec.validate()?;
+        Ok(format!(
+            concat!(
+                "#!/usr/bin/env bash\n",
+                "set -euo pipefail\n",
+                "SCRIPT_DIR=\"$(cd \"$(dirname \"${{BASH_SOURCE[0]}}\")\" && pwd)\"\n",
+                "UNIT_NAME={unit_name}\n",
+                "install -m 0644 \"$SCRIPT_DIR/$UNIT_NAME\" \"/etc/systemd/system/$UNIT_NAME\"\n",
+                "systemctl daemon-reload\n",
+                "systemctl enable --now \"$UNIT_NAME\"\n",
+                "systemctl status --no-pager \"$UNIT_NAME\"\n"
+            ),
+            unit_name = shell_quote(&self.unit_name),
+        ))
+    }
+
+    pub fn render_uninstall_script(&self) -> Result<String, SupervisorError> {
+        validate_name("unit_name", &self.unit_name)?;
+        Ok(format!(
+            concat!(
+                "#!/usr/bin/env bash\n",
+                "set -euo pipefail\n",
+                "UNIT_NAME={unit_name}\n",
+                "systemctl disable --now \"$UNIT_NAME\" || true\n",
+                "rm -f \"/etc/systemd/system/$UNIT_NAME\"\n",
+                "systemctl daemon-reload\n",
+                "systemctl reset-failed \"$UNIT_NAME\" || true\n"
+            ),
+            unit_name = shell_quote(&self.unit_name),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowsPeerWorkerTask {
     pub task_name: String,
     pub spec: PeerWorkerSupervisorSpec,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowsFederationDaemonTask {
+    pub task_name: String,
+    pub spec: FederationDaemonSupervisorSpec,
+}
+
 impl WindowsPeerWorkerTask {
     pub fn render(&self) -> Result<String, SupervisorError> {
         validate_name("task_name", &self.task_name)?;
         let args = self.spec.worker_args()?;
+        let argument = args
+            .iter()
+            .map(|arg| windows_arg_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Ok(format!(
+            concat!(
+                "$ErrorActionPreference = 'Stop'\n",
+                "$action = New-ScheduledTaskAction -Execute {binary} -Argument {argument} -WorkingDirectory {working_directory}\n",
+                "$trigger = New-ScheduledTaskTrigger -AtStartup\n",
+                "$settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365)\n",
+                "Register-ScheduledTask -TaskName {task_name} -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force\n"
+            ),
+            binary = powershell_quote(&self.spec.binary.to_string_lossy()),
+            argument = powershell_quote(&argument),
+            working_directory = powershell_quote(&self.spec.working_directory.to_string_lossy()),
+            task_name = powershell_quote(&self.task_name),
+        ))
+    }
+
+    pub fn render_uninstall_script(&self) -> Result<String, SupervisorError> {
+        validate_name("task_name", &self.task_name)?;
+        Ok(format!(
+            concat!(
+                "$ErrorActionPreference = 'Stop'\n",
+                "$taskName = {task_name}\n",
+                "if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {{\n",
+                "    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false\n",
+                "}}\n"
+            ),
+            task_name = powershell_quote(&self.task_name),
+        ))
+    }
+}
+
+impl WindowsFederationDaemonTask {
+    pub fn render(&self) -> Result<String, SupervisorError> {
+        validate_name("task_name", &self.task_name)?;
+        let args = self.spec.daemon_args()?;
         let argument = args
             .iter()
             .map(|arg| windows_arg_quote(arg))
@@ -268,6 +465,20 @@ mod tests {
         }
     }
 
+    fn daemon_spec() -> FederationDaemonSupervisorSpec {
+        FederationDaemonSupervisorSpec {
+            binary: PathBuf::from("/usr/local/bin/astragrid"),
+            working_directory: PathBuf::from("/srv/astragrid"),
+            bind: "127.0.0.1:17655".to_owned(),
+            ledger: PathBuf::from("data/mission.agl"),
+            shared_key_file: PathBuf::from("secrets/peer.key"),
+            health_file: PathBuf::from("data/federation-health.json"),
+            audit_log: PathBuf::from("data/federation-audit.jsonl"),
+            max_requests: None,
+            idle_timeout_seconds: 0,
+        }
+    }
+
     #[test]
     fn renders_systemd_peer_worker_unit() {
         let unit = SystemdPeerWorkerUnit {
@@ -283,6 +494,24 @@ mod tests {
         assert!(rendered.contains("[Service]"));
         assert!(rendered.contains("Restart=always"));
         assert!(rendered.contains("\"/usr/local/bin/astragrid\" \"peer-queue\" \"worker\""));
+        assert!(rendered.contains("User=astragrid"));
+    }
+
+    #[test]
+    fn renders_systemd_federation_daemon_unit() {
+        let unit = SystemdFederationDaemonUnit {
+            unit_name: "astragrid-federation-daemon.service".to_owned(),
+            description: "AstraGrid federation daemon".to_owned(),
+            user: Some("astragrid".to_owned()),
+            restart_seconds: 5,
+            spec: daemon_spec(),
+        };
+
+        let rendered = unit.render().unwrap();
+
+        assert!(rendered.contains("[Service]"));
+        assert!(rendered.contains("\"/usr/local/bin/astragrid\" \"net\" \"serve-daemon\""));
+        assert!(rendered.contains("\"--health-file\" \"data/federation-health.json\""));
         assert!(rendered.contains("User=astragrid"));
     }
 
@@ -304,6 +533,25 @@ mod tests {
     }
 
     #[test]
+    fn renders_windows_federation_daemon_task() {
+        let mut spec = daemon_spec();
+        spec.binary = PathBuf::from("D:\\astragrid\\target\\release\\astragrid.exe");
+        spec.working_directory = PathBuf::from("D:\\astragrid");
+        spec.max_requests = Some(1);
+        let task = WindowsFederationDaemonTask {
+            task_name: "AstraGrid Federation Daemon".to_owned(),
+            spec,
+        };
+
+        let rendered = task.render().unwrap();
+
+        assert!(rendered.contains("New-ScheduledTaskAction"));
+        assert!(rendered.contains("serve-daemon"));
+        assert!(rendered.contains("--max-requests"));
+        assert!(rendered.contains("Register-ScheduledTask"));
+    }
+
+    #[test]
     fn renders_systemd_install_uninstall_scripts() {
         let unit = SystemdPeerWorkerUnit {
             unit_name: "astragrid-peer-worker.service".to_owned(),
@@ -319,6 +567,29 @@ mod tests {
         assert!(install.contains("systemctl enable --now"));
         assert!(install.contains("/etc/systemd/system/$UNIT_NAME"));
         assert!(uninstall.contains("systemctl disable --now"));
+    }
+
+    #[test]
+    fn renders_federation_daemon_install_uninstall_scripts() {
+        let unit = SystemdFederationDaemonUnit {
+            unit_name: "astragrid-federation-daemon.service".to_owned(),
+            description: "AstraGrid federation daemon".to_owned(),
+            user: Some("astragrid".to_owned()),
+            restart_seconds: 5,
+            spec: daemon_spec(),
+        };
+        let task = WindowsFederationDaemonTask {
+            task_name: "AstraGrid Federation Daemon".to_owned(),
+            spec: daemon_spec(),
+        };
+
+        let systemd_install = unit.render_install_script().unwrap();
+        let systemd_uninstall = unit.render_uninstall_script().unwrap();
+        let windows_uninstall = task.render_uninstall_script().unwrap();
+
+        assert!(systemd_install.contains("systemctl enable --now"));
+        assert!(systemd_uninstall.contains("systemctl disable --now"));
+        assert!(windows_uninstall.contains("Unregister-ScheduledTask"));
     }
 
     #[test]
@@ -342,6 +613,25 @@ mod tests {
         assert!(matches!(
             spec.worker_args(),
             Err(SupervisorError::UnsafeText { field: "queue" })
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_federation_daemon_values() {
+        let mut spec = daemon_spec();
+        spec.bind = "127.0.0.1:17655\nbad".to_owned();
+
+        assert!(matches!(
+            spec.daemon_args(),
+            Err(SupervisorError::UnsafeText { field: "bind" })
+        ));
+
+        let mut spec = daemon_spec();
+        spec.max_requests = Some(0);
+
+        assert!(matches!(
+            spec.daemon_args(),
+            Err(SupervisorError::InvalidValue(_))
         ));
     }
 }

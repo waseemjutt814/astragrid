@@ -225,6 +225,8 @@ cargo run -q -p astragrid -- supervisor windows-peer-worker --output .cache\astr
 cargo run -q -p astragrid -- supervisor systemd-peer-worker --output .cache\astragrid-peer-worker.service --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --user astragrid
 cargo run -q -p astragrid -- supervisor windows-peer-worker-kit --output-dir .cache\worker-kit-windows --binary target\release\astragrid.exe --working-directory . --ledger $ledger --queue $peerQueue --shared-key-file $sharedKey
 cargo run -q -p astragrid -- supervisor systemd-peer-worker-kit --output-dir .cache\worker-kit-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --user astragrid
+cargo run -q -p astragrid -- supervisor windows-federation-daemon-kit --output-dir .cache\federation-kit-windows --binary target\release\astragrid.exe --working-directory . --bind 127.0.0.1:17655 --ledger $ledger --shared-key-file $sharedKey --health-file .cache\federation-health-$id.json --audit-log .cache\federation-audit-$id.jsonl
+cargo run -q -p astragrid -- supervisor systemd-federation-daemon-kit --output-dir .cache\federation-kit-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
 ```
 
 Exercise live worker recovery with a fail-once local worker:

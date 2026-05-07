@@ -129,3 +129,12 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add health JSON and JSONL audit output for daemon lifecycle and peer requests.
 - [x] Add parser and executable tests for daemon serving, health output, audit output, and invalid config.
 - [x] Extend acceptance coverage and docs for hardened federation serving.
+
+## Next Wave: Federation Daemon Service Artifacts
+
+- [x] Add typed supervisor specs for the federation daemon command contract.
+- [x] Add systemd unit rendering with restart policy, working directory, health path, and audit path.
+- [x] Add Windows Scheduled Task rendering for the same real daemon command.
+- [x] Add install/uninstall kits for systemd and Windows federation daemon services.
+- [x] Add renderer and CLI parser tests for the daemon service artifacts.
+- [x] Extend acceptance coverage and docs for generated federation service kits.

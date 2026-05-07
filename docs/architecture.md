@@ -242,6 +242,14 @@ JSONL audit event for start, exit, restart scheduling, recovery, or final failur
 fails closed when the child never reaches the expected success exit code, so wrapper scripts and
 operator runbooks can detect exhausted recovery instead of assuming the worker is healthy.
 
+## Service Artifacts
+
+`astragrid-supervisor` renders service-manager artifacts for both peer queue workers and the
+authenticated federation daemon. The generated systemd units and Windows Scheduled Task scripts
+call the real CLI entry points with explicit ledger, shared-key, health, and audit paths. Kit
+commands include install and uninstall wrappers so operators can review the generated service
+contract before installing it on a host.
+
 ## Harvesting
 
 `astragrid-harvest` fetches remote GeoJSON or OGC API Features URLs, applies optional `limit` and

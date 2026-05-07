@@ -168,6 +168,13 @@ For package or field smoke tests, add finite shutdown controls:
 .\target\release\astragrid.exe net serve-daemon --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl --max-requests 1 --idle-timeout-seconds 15
 ```
 
+Generate installable service kits before deploying the daemon as a host service:
+
+```powershell
+.\target\release\astragrid.exe supervisor windows-federation-daemon-kit --output-dir ops\field\services\federation-windows --binary .\target\release\astragrid.exe --working-directory . --bind 127.0.0.1:17655 --ledger ops\field\data\mission.agl --shared-key-file ops\field\data\peer.key --health-file ops\field\data\federation-health.json --audit-log ops\field\data\federation-audit.jsonl
+.\target\release\astragrid.exe supervisor systemd-federation-daemon-kit --output-dir ops\field\services\federation-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
+```
+
 ## Update And Release Evidence
 
 ```powershell

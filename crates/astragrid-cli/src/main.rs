@@ -42,7 +42,8 @@ use astragrid_scenario::run_scenario_file;
 use astragrid_state::{MissionState, StateExport};
 use astragrid_store::{EventFilter, MissionStore};
 use astragrid_supervisor::{
-    PeerWorkerSupervisorSpec, SystemdPeerWorkerUnit, WindowsPeerWorkerTask,
+    FederationDaemonSupervisorSpec, PeerWorkerSupervisorSpec, SystemdFederationDaemonUnit,
+    SystemdPeerWorkerUnit, WindowsFederationDaemonTask, WindowsPeerWorkerTask,
 };
 use astragrid_sync::{SyncPlan, apply_append_only};
 use astragrid_sync_queue::{
@@ -1529,6 +1530,54 @@ enum SupervisorCommands {
         #[command(flatten)]
         spec: PeerWorkerSupervisorArgs,
     },
+    /// Generate a systemd unit for the federation daemon.
+    SystemdFederationDaemon {
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value = "astragrid-federation-daemon.service")]
+        unit_name: String,
+        #[arg(long, default_value = "AstraGrid federation daemon")]
+        description: String,
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        restart_seconds: u32,
+        #[command(flatten)]
+        spec: FederationDaemonSupervisorArgs,
+    },
+    /// Generate a Windows Scheduled Task registration script for the federation daemon.
+    WindowsFederationDaemon {
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value = "AstraGrid Federation Daemon")]
+        task_name: String,
+        #[command(flatten)]
+        spec: FederationDaemonSupervisorArgs,
+    },
+    /// Generate systemd unit plus install/uninstall scripts for the federation daemon.
+    SystemdFederationDaemonKit {
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "astragrid-federation-daemon.service")]
+        unit_name: String,
+        #[arg(long, default_value = "AstraGrid federation daemon")]
+        description: String,
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long, default_value_t = 5)]
+        restart_seconds: u32,
+        #[command(flatten)]
+        spec: FederationDaemonSupervisorArgs,
+    },
+    /// Generate Windows Scheduled Task install/uninstall scripts for the federation daemon.
+    WindowsFederationDaemonKit {
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "AstraGrid Federation Daemon")]
+        task_name: String,
+        #[command(flatten)]
+        spec: FederationDaemonSupervisorArgs,
+    },
     /// Run a local worker under a finite restart watchdog with JSONL audit.
     WatchdogRun {
         #[arg(long, default_value = "astragrid-worker")]
@@ -1581,6 +1630,44 @@ impl From<PeerWorkerSupervisorArgs> for PeerWorkerSupervisorSpec {
             limit: value.limit,
             retry_delay_seconds: value.retry_delay_seconds,
             interval_seconds: value.interval_seconds,
+        }
+    }
+}
+
+#[derive(Debug, Clone, clap::Args)]
+struct FederationDaemonSupervisorArgs {
+    #[arg(long, default_value = "astragrid")]
+    binary: PathBuf,
+    #[arg(long, default_value = ".")]
+    working_directory: PathBuf,
+    #[arg(long, default_value = "127.0.0.1:17655")]
+    bind: String,
+    #[arg(long, default_value = "data/mission.agl")]
+    ledger: PathBuf,
+    #[arg(long)]
+    shared_key_file: PathBuf,
+    #[arg(long, default_value = "data/federation-health.json")]
+    health_file: PathBuf,
+    #[arg(long, default_value = "data/federation-audit.jsonl")]
+    audit_log: PathBuf,
+    #[arg(long)]
+    max_requests: Option<u32>,
+    #[arg(long, default_value_t = 0)]
+    idle_timeout_seconds: u64,
+}
+
+impl From<FederationDaemonSupervisorArgs> for FederationDaemonSupervisorSpec {
+    fn from(value: FederationDaemonSupervisorArgs) -> Self {
+        Self {
+            binary: value.binary,
+            working_directory: value.working_directory,
+            bind: value.bind,
+            ledger: value.ledger,
+            shared_key_file: value.shared_key_file,
+            health_file: value.health_file,
+            audit_log: value.audit_log,
+            max_requests: value.max_requests,
+            idle_timeout_seconds: value.idle_timeout_seconds,
         }
     }
 }
@@ -3273,6 +3360,95 @@ fn main() -> Result<()> {
                     "install": install_path,
                     "uninstall": uninstall_path,
                     "kind": "windows-peer-worker-kit",
+                }))
+            }
+            SupervisorCommands::SystemdFederationDaemon {
+                output,
+                unit_name,
+                description,
+                user,
+                restart_seconds,
+                spec,
+            } => {
+                let unit = SystemdFederationDaemonUnit {
+                    unit_name,
+                    description,
+                    user,
+                    restart_seconds,
+                    spec: spec.into(),
+                };
+                let rendered = unit.render()?;
+                write_text_file(&output, &rendered)?;
+                print_json(&json!({
+                    "output": output,
+                    "kind": "systemd-federation-daemon",
+                }))
+            }
+            SupervisorCommands::WindowsFederationDaemon {
+                output,
+                task_name,
+                spec,
+            } => {
+                let task = WindowsFederationDaemonTask {
+                    task_name,
+                    spec: spec.into(),
+                };
+                let rendered = task.render()?;
+                write_text_file(&output, &rendered)?;
+                print_json(&json!({
+                    "output": output,
+                    "kind": "windows-federation-daemon",
+                }))
+            }
+            SupervisorCommands::SystemdFederationDaemonKit {
+                output_dir,
+                unit_name,
+                description,
+                user,
+                restart_seconds,
+                spec,
+            } => {
+                let unit = SystemdFederationDaemonUnit {
+                    unit_name: unit_name.clone(),
+                    description,
+                    user,
+                    restart_seconds,
+                    spec: spec.into(),
+                };
+                fs::create_dir_all(&output_dir)?;
+                let unit_path = output_dir.join(&unit_name);
+                let install_path = output_dir.join("install-systemd-federation-daemon.sh");
+                let uninstall_path = output_dir.join("uninstall-systemd-federation-daemon.sh");
+                write_text_file(&unit_path, &unit.render()?)?;
+                write_text_file(&install_path, &unit.render_install_script()?)?;
+                write_text_file(&uninstall_path, &unit.render_uninstall_script()?)?;
+                print_json(&json!({
+                    "output_dir": output_dir,
+                    "unit": unit_path,
+                    "install": install_path,
+                    "uninstall": uninstall_path,
+                    "kind": "systemd-federation-daemon-kit",
+                }))
+            }
+            SupervisorCommands::WindowsFederationDaemonKit {
+                output_dir,
+                task_name,
+                spec,
+            } => {
+                let task = WindowsFederationDaemonTask {
+                    task_name,
+                    spec: spec.into(),
+                };
+                fs::create_dir_all(&output_dir)?;
+                let install_path = output_dir.join("install-windows-federation-daemon.ps1");
+                let uninstall_path = output_dir.join("uninstall-windows-federation-daemon.ps1");
+                write_text_file(&install_path, &task.render()?)?;
+                write_text_file(&uninstall_path, &task.render_uninstall_script()?)?;
+                print_json(&json!({
+                    "output_dir": output_dir,
+                    "install": install_path,
+                    "uninstall": uninstall_path,
+                    "kind": "windows-federation-daemon-kit",
                 }))
             }
             SupervisorCommands::WatchdogRun {
@@ -5384,6 +5560,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "quorum registry enrollment",
             "worker watchdog recovery",
             "hardened federation daemon",
+            "federation daemon supervisor artifacts",
             "package provenance"
         ]
     });
@@ -5500,6 +5677,8 @@ try {{
     $federationOut = Join-Path $Run 'federation-events.json'
     $federationHealth = Join-Path $Run 'federation-health.json'
     $federationAudit = Join-Path $Run 'federation-audit.jsonl'
+    $federationSystemdKit = Join-Path $Run 'federation-systemd-kit'
+    $federationWindowsKit = Join-Path $Run 'federation-windows-kit'
     $federationPort = Get-Random -Minimum 20000 -Maximum 30000
     $federationBind = "127.0.0.1:$federationPort"
 
@@ -5551,6 +5730,10 @@ exit 0
     if ($federationHealthJson.status -ne 'stopped') {{ throw "unexpected federation daemon status: $($federationHealthJson.status)" }}
     if ($federationHealthJson.served_requests -lt 1) {{ throw 'federation daemon did not serve a peer request' }}
     if (-not (Select-String -LiteralPath $federationAudit -Pattern 'peer_request_served' -Quiet)) {{ throw 'federation audit did not record served peer request' }}
+    Invoke-AstraGrid supervisor systemd-federation-daemon-kit --output-dir $federationSystemdKit --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --bind 127.0.0.1:17655 --ledger data/mission.agl --shared-key-file secrets/peer.key --health-file data/federation-health.json --audit-log data/federation-audit.jsonl --user astragrid
+    Invoke-AstraGrid supervisor windows-federation-daemon-kit --output-dir $federationWindowsKit --binary target\release\astragrid.exe --working-directory . --bind $federationBind --ledger $ledger --shared-key-file $federationKey --health-file $federationHealth --audit-log $federationAudit --max-requests 1 --idle-timeout-seconds 15
+    if (-not (Select-String -LiteralPath (Join-Path $federationSystemdKit 'astragrid-federation-daemon.service') -Pattern 'serve-daemon' -Quiet)) {{ throw 'systemd federation kit does not call serve-daemon' }}
+    if (-not (Select-String -LiteralPath (Join-Path $federationWindowsKit 'install-windows-federation-daemon.ps1') -Pattern 'serve-daemon' -Quiet)) {{ throw 'windows federation kit does not call serve-daemon' }}
     Invoke-AstraGrid identity create --path $identity --name lead --role incident_commander --passphrase-file $passphrase
     Invoke-AstraGrid identity create --path $deputyIdentity --name deputy --role incident_commander --passphrase-file $deputyPassphrase
     Invoke-AstraGrid identity create --path $medicIdentity --name medic --role operator --passphrase-file $medicPassphrase
@@ -9404,6 +9587,67 @@ mod tests {
             } => {
                 assert_eq!(output_dir, PathBuf::from("ops/windows"));
                 assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_supervisor_federation_daemon_commands() {
+        let systemd = Cli::try_parse_from([
+            "astragrid",
+            "supervisor",
+            "systemd-federation-daemon",
+            "--output",
+            "ops/astragrid-federation-daemon.service",
+            "--shared-key-file",
+            "secrets/peer.key",
+            "--health-file",
+            "ops/federation-health.json",
+            "--audit-log",
+            "ops/federation-audit.jsonl",
+        ])
+        .unwrap();
+        match systemd.command.expect("command") {
+            Commands::Supervisor {
+                command: super::SupervisorCommands::SystemdFederationDaemon { output, spec, .. },
+            } => {
+                assert_eq!(
+                    output,
+                    PathBuf::from("ops/astragrid-federation-daemon.service")
+                );
+                assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+                assert_eq!(
+                    spec.health_file,
+                    PathBuf::from("ops/federation-health.json")
+                );
+                assert_eq!(spec.audit_log, PathBuf::from("ops/federation-audit.jsonl"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let windows = Cli::try_parse_from([
+            "astragrid",
+            "supervisor",
+            "windows-federation-daemon-kit",
+            "--output-dir",
+            "ops/windows-federation",
+            "--shared-key-file",
+            "secrets/peer.key",
+            "--max-requests",
+            "1",
+        ])
+        .unwrap();
+        match windows.command.expect("command") {
+            Commands::Supervisor {
+                command:
+                    super::SupervisorCommands::WindowsFederationDaemonKit {
+                        output_dir, spec, ..
+                    },
+            } => {
+                assert_eq!(output_dir, PathBuf::from("ops/windows-federation"));
+                assert_eq!(spec.shared_key_file, PathBuf::from("secrets/peer.key"));
+                assert_eq!(spec.max_requests, Some(1));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
