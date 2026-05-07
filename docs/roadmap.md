@@ -47,3 +47,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add live-refresh local dashboard serving without weakening offline export behavior.
 - [x] Add peer worker install/uninstall wrappers around generated supervisor artifacts.
 - [x] Add a full mission acceptance pack that exercises identity, registry, evidence, approval, dashboard, ops bundle, package, and doctor gates together.
+
+## Next Wave: Production Hardening
+
+- [x] Add a release custody pack command that signs provenance, creates quorum and policy files, writes a manifest, and requires a healthy release doctor gate.
+- [x] Wire signed package builds through the custody pack so signed releases produce complete promotion evidence instead of a loose signature only.
+- [x] Add live-refresh local map console serving without weakening offline HTML export behavior.
+- [x] Add public trusted-registry bundle export and verification for multi-host operator handoff.
+- [x] Add parser and executable tests for custody packs, live map serving, and registry trust bundles.

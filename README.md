@@ -20,11 +20,13 @@ evidence-to-command workflow drafting, and a CLI.
 - OS-sealed passphrase envelopes for supported local providers.
 - Operator key audit for encryption state and local permission signals.
 - Trusted operator registry with enrollment and revocation checks.
+- Public registry trust bundle export and verification for multi-host handoff.
 - SQLite mission index with idempotent verified-ledger ingest, query, import, and export.
 - Materialized mission state summaries derived from verified ledger events.
 - GeoJSON feature ingestion with bounding boxes and content digests.
 - Self-contained HTML/SVG map export from feature records.
 - Self-contained browser map console with mission state overlays.
+- Loopback map console serving that regenerates verified overlays for each request.
 - Evidence bundles with cited evidence ids, confidence checks, and bundle hashes.
 - Deterministic recommendation rules that emit verified evidence bundles.
 - Structured model recommendation adapter that only emits verified evidence bundles.
@@ -50,6 +52,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Release provenance verification with fail-closed SHA-256 checks for packaged artifacts.
 - Optional operator-signed provenance envelopes for release custody.
 - Multi-signature provenance quorum verification with distinct signer thresholds.
+- One-shot release custody pack generation for signatures, quorum, policy, manifest, and healthy doctor gate.
 - Deterministic supervisor artifact generation for peer queue workers.
 - Peer worker service kits with generated install and uninstall wrappers.
 - Runnable mission acceptance pack generation.
@@ -112,5 +115,4 @@ AstraGrid is built around four non-negotiables:
 
 ## Roadmap
 
-See `docs/roadmap.md` for the active phase checklist. The next deepening passes are hardware-backed
-keys, multi-host operator trust, live map refresh, and field deployment hardening.
+See `docs/roadmap.md` for the completed phase checklist and the next operator-hardening targets.

@@ -49,6 +49,8 @@ cargo run -q -p astragrid -- identity inspect --path $key --passphrase-os-key "$
 cargo run -q -p astragrid -- identity audit --path $key
 cargo run -q -p astragrid -- identity registry-init --registry $registry --authority local-command
 cargo run -q -p astragrid -- identity enroll --registry $registry --identity $key --passphrase-file $passphrase --issued-by local-command
+cargo run -q -p astragrid -- identity registry-bundle --registry $registry --output ".cache\trust-bundle-$id.json"
+cargo run -q -p astragrid -- identity registry-verify-bundle --input ".cache\trust-bundle-$id.json" --registry $registry
 '{ "water_level_m": 5.2 }' | Set-Content -Encoding UTF8 $payload
 cargo run -q -p astragrid -- append-signed --ledger $ledger --identity $key --passphrase-file $passphrase --registry $registry --action declare_incident --subject river-east --priority critical --payload "@$payload"
 cargo run -q -p astragrid -- verify --ledger $ledger
@@ -67,6 +69,10 @@ $geoMap = ".cache\features-$id.html"
 cargo run -q -p astragrid -- geo ingest --input $geo --output $geoOut
 cargo run -q -p astragrid -- geo map --input $geoOut --output $geoMap --title "Flood Watch Map"
 cargo run -q -p astragrid -- geo console --input $geoOut --ledger $ledger --output ".cache\console-$id.html" --title "Flood Watch Console"
+$mapServer = Start-Job -ScriptBlock { param($geoOut, $ledger) cargo run -q -p astragrid -- geo serve --input $geoOut --ledger $ledger --bind 127.0.0.1:17881 --max-requests 1 } -ArgumentList $geoOut, $ledger
+Start-Sleep -Seconds 2
+Invoke-WebRequest http://127.0.0.1:17881/map-console.html | Select-Object -ExpandProperty StatusCode
+Receive-Job $mapServer -Wait
 ```
 
 ## Evidence And Sync Smoke Test
@@ -322,15 +328,13 @@ cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-
 ```
 
 To sign release custody with a real local operator key, pass the identity to the package script.
-The script signs the provenance file and immediately verifies the detached signature with the
-freshly built release binary:
+The script signs the provenance file, creates quorum and policy documents, writes a custody
+manifest, and requires a healthy release doctor gate with the freshly built release binary:
 
 ```powershell
 .\tools\local\package-release.ps1 -SigningIdentity data\operators\release.agkey -PassphraseFile data\operators\release.pass
 cargo run -q -p astragrid -- provenance verify-signature --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json
-cargo run -q -p astragrid -- provenance quorum-create --threshold 1 --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --output dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
 cargo run -q -p astragrid -- provenance quorum-verify --input dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
-cargo run -q -p astragrid -- provenance policy-template --output dist\astragrid-release-policy.json --package astragrid --target windows-x64 --min-distinct-valid-signers 1 --required-signer-id "<operator-id>" --require-clean-git
-cargo run -q -p astragrid -- provenance policy-verify --policy dist\astragrid-release-policy.json --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
-cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json --policy dist\astragrid-release-policy.json
+cargo run -q -p astragrid -- provenance policy-verify --policy dist\astragrid-windows-x64-0.1.0.provenance.release-policy.json --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json
+cargo run -q -p astragrid -- doctor release --provenance dist\astragrid-windows-x64-0.1.0.provenance.json --signature dist\astragrid-windows-x64-0.1.0.provenance.sig.json --quorum dist\astragrid-windows-x64-0.1.0.provenance.quorum.json --policy dist\astragrid-windows-x64-0.1.0.provenance.release-policy.json
 ```

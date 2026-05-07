@@ -58,14 +58,24 @@ try {
     }
     $provenanceName = Split-Path -Leaf $provenancePath
     if ($provenanceName.EndsWith(".json")) {
-        $signatureName = "$($provenanceName.Substring(0, $provenanceName.Length - 5)).sig.json"
+        $provenanceStem = $provenanceName.Substring(0, $provenanceName.Length - 5)
+        $signatureName = "$provenanceStem.sig.json"
     }
     else {
+        $provenanceStem = $provenanceName
         $signatureName = "$provenanceName.sig.json"
     }
-    $signaturePath = Join-Path $dist $signatureName
-    if (Test-Path -LiteralPath $signaturePath) {
-        Remove-Item -LiteralPath $signaturePath -Force
+    $custodyNames = @(
+        $signatureName,
+        "$provenanceStem.quorum.json",
+        "$provenanceStem.release-policy.json",
+        "$provenanceStem.custody-manifest.json"
+    )
+    foreach ($custodyName in $custodyNames) {
+        $custodyPath = Join-Path $dist $custodyName
+        if (Test-Path -LiteralPath $custodyPath) {
+            Remove-Item -LiteralPath $custodyPath -Force
+        }
     }
 
     $provenance = [ordered]@{
@@ -97,27 +107,27 @@ try {
     Write-Host "Provenance $provenancePath"
 
     if ($SigningIdentity) {
-        $signArgs = @(
+        $custodyArgs = @(
             "provenance",
-            "sign",
-            "--input",
+            "custody-pack",
+            "--provenance",
             $provenancePath,
+            "--output-dir",
+            $dist,
             "--identity",
-            $SigningIdentity
+            $SigningIdentity,
+            "--threshold",
+            "1",
+            "--require-clean-git"
         )
         if ($PassphraseFile) {
-            $signArgs += @("--passphrase-file", $PassphraseFile)
+            $custodyArgs += @("--passphrase-file", $PassphraseFile)
         }
-        & $binary @signArgs
+        & $binary @custodyArgs
         if ($LASTEXITCODE -ne 0) {
-            throw "provenance signing failed"
+            throw "release custody pack failed"
         }
-
-        & $binary "provenance" "verify-signature" "--signature" $signaturePath
-        if ($LASTEXITCODE -ne 0) {
-            throw "provenance signature verification failed"
-        }
-        Write-Host "Provenance signature $signaturePath"
+        Write-Host "Release custody pack $dist"
     }
 }
 finally {

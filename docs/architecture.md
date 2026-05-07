@@ -10,6 +10,7 @@ operator CLI -> encrypted identity key -> signature -> trusted registry -> admis
 mission ledger -> state projection
 GeoJSON -> feature digest records
 feature digest records -> HTML/SVG map artifact
+feature digest records + mission state -> loopback map console server
 evidence files -> evidence bundle hash
 rules + sensor readings -> verified evidence bundle
 peer ledger -> authenticated snapshot -> sync comparison plan
@@ -20,9 +21,11 @@ workflow command draft -> approval log -> signed ledger append
 scenario file -> ledger/state/store assertions
 mission artifacts -> dashboard export
 mission artifacts -> loopback dashboard server
+trusted registry -> public trust bundle -> multi-host handoff verification
 workspace artifacts -> doctor report
 verified artifacts -> ops handoff bundle
 operator pack -> executable acceptance workflow
+release provenance -> custody pack -> healthy release doctor gate
 ```
 
 ## Mission Ledger
@@ -91,8 +94,11 @@ The operator registry is a local JSON trust document. It records:
 
 When `append-signed --registry` is used, AstraGrid verifies the command signature and rejects the
 append if the operator is not enrolled, has been revoked, or the signed identity no longer matches
-the registry entry. The registry is still local trust; remote certificate authorities and hardware
-keys are future work.
+the registry entry. `identity registry-bundle` exports a public trust bundle with registry
+fingerprint, authority, active/revoked counts, and public operator records. `identity
+registry-verify-bundle` checks bundle structure and can compare it with a registry file before a
+handoff is accepted on another host. The registry remains local trust; remote certificate
+authorities and hardware keys are separate deployment trust roots.
 
 ## Mission Store
 
@@ -121,8 +127,9 @@ over id, geometry, and properties. Invalid or geometry-less features fail ingest
 
 `astragrid-map` renders feature JSON Lines into a self-contained HTML/SVG map artifact. The map
 uses verified feature bounding boxes, preserves feature ids and digests in the table, and escapes
-operator-provided text before writing HTML. It is an offline report artifact, not a live tracking
-surface.
+operator-provided text before writing HTML. `geo serve` binds to a requested address, defaults to
+loopback, rebuilds the map console from feature records plus ledger state for every request, and
+injects browser refresh metadata without changing the offline artifact path.
 
 ## Evidence Bundles
 
@@ -235,6 +242,11 @@ overall healthy/warning/failed report. `doctor release` verifies package provena
 signature, quorum, or release custody policy before an artifact is shared. Custody policies bind a
 package to required signer ids, allowed signer ids, signer thresholds, target metadata, and clean
 Git provenance.
+
+`provenance custody-pack` turns a verified provenance file and one or more real local operator
+keys into a complete promotion evidence set: detached signatures, quorum envelope, release custody
+policy, manifest, and a healthy `doctor release` gate. The command fails if hashes, signatures,
+quorum, policy, or doctor checks do not pass.
 
 ## Future System Shape
 

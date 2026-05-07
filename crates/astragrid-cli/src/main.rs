@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -10,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use astragrid_approvals::{ApprovalLog, ApprovalStatus};
 use astragrid_core::{
     Action, Actor, CommandRequest, MissionLedger, OperatorKeypair, OperatorRegistry,
-    PAYLOAD_LIMIT_BYTES, Priority, Role,
+    OperatorRegistryEntry, OperatorStatus, PAYLOAD_LIMIT_BYTES, Priority, Role,
 };
 use astragrid_crypto::SealedArtifact;
 use astragrid_dashboard::DashboardDocument;
@@ -41,7 +42,9 @@ use astragrid_sync_queue::{
 };
 use astragrid_workflow::{CommandDraft, WorkflowPlanner, actor_from_parts};
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 
 const DEFAULT_OS_PASSPHRASE_PURPOSE: &str = "astragrid-operator-key-passphrase-v1";
@@ -321,6 +324,20 @@ enum IdentityCommands {
         #[arg(long)]
         registry: PathBuf,
     },
+    /// Export a public trust bundle for another host to verify/import.
+    RegistryBundle {
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Verify a public trust bundle and optionally compare it with a registry file.
+    RegistryVerifyBundle {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        registry: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -426,6 +443,22 @@ enum GeoCommands {
         output: PathBuf,
         #[arg(long, default_value = "AstraGrid Map Console")]
         title: String,
+    },
+    /// Serve the map console over loopback and regenerate it for each request.
+    Serve {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, default_value = "data/mission.agl")]
+        ledger: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:17881")]
+        bind: String,
+        #[arg(long, default_value = "AstraGrid Map Console")]
+        title: String,
+        #[arg(long, default_value_t = 5)]
+        refresh_seconds: u64,
+        /// Optional finite request count for smoke tests and supervised runs.
+        #[arg(long)]
+        max_requests: Option<u32>,
     },
 }
 
@@ -852,6 +885,23 @@ enum ProvenanceCommands {
         #[arg(long)]
         quorum: PathBuf,
     },
+    /// Sign provenance, create quorum/policy files, and run release doctor in one gate.
+    CustodyPack {
+        #[arg(long)]
+        provenance: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, required = true)]
+        identity: Vec<PathBuf>,
+        #[arg(long)]
+        passphrase_file: Vec<PathBuf>,
+        #[arg(long)]
+        passphrase_os_key: Vec<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        threshold: usize,
+        #[arg(long, default_value_t = false)]
+        require_clean_git: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1264,6 +1314,26 @@ fn main() -> Result<()> {
                     "operators": entries,
                 }))
             }
+            IdentityCommands::RegistryBundle { registry, output } => {
+                let bundle = build_registry_trust_bundle(&registry)?;
+                write_json_file(&output, &bundle)?;
+                print_json(&json!({
+                    "output": output,
+                    "authority": bundle.authority,
+                    "active_operators": bundle.active_operators,
+                    "revoked_operators": bundle.revoked_operators,
+                    "registry_sha256": bundle.registry_sha256,
+                }))
+            }
+            IdentityCommands::RegistryVerifyBundle { input, registry } => {
+                let bundle: TrustedRegistryBundle = read_json_file(&input)?;
+                let report = verify_registry_trust_bundle(&bundle, registry.as_ref())?;
+                print_json(&report)?;
+                if !report["valid"].as_bool().unwrap_or(false) {
+                    bail!("registry trust bundle verification failed");
+                }
+                Ok(())
+            }
         },
         Commands::Store { command } => match command {
             StoreCommands::Ingest { ledger, db } => {
@@ -1373,12 +1443,7 @@ fn main() -> Result<()> {
                 output,
                 title,
             } => {
-                let text = read_text_file(&input).with_context(|| {
-                    format!("failed to read feature records {}", input.display())
-                })?;
-                let ledger = MissionLedger::open(ledger);
-                let state = MissionState::from_ledger(&ledger)?;
-                let document = MapConsoleDocument::from_json_lines_and_state(&text, title, &state)?;
+                let document = build_map_console_document(&input, &ledger, title)?;
                 write_text_file(&output, &document.to_html())?;
                 print_json(&json!({
                     "output": output,
@@ -1386,6 +1451,21 @@ fn main() -> Result<()> {
                     "incidents": document.incidents.len(),
                 }))
             }
+            GeoCommands::Serve {
+                input,
+                ledger,
+                bind,
+                title,
+                refresh_seconds,
+                max_requests,
+            } => print_json(&serve_map_console(MapServeRequest {
+                input,
+                ledger,
+                bind,
+                title,
+                refresh_seconds,
+                max_requests,
+            })?),
         },
         Commands::Evidence { command } => match command {
             EvidenceCommands::Build {
@@ -2008,6 +2088,23 @@ fn main() -> Result<()> {
                 }
                 Ok(())
             }
+            ProvenanceCommands::CustodyPack {
+                provenance,
+                output_dir,
+                identity,
+                passphrase_file,
+                passphrase_os_key,
+                threshold,
+                require_clean_git,
+            } => print_json(&write_release_custody_pack(ReleaseCustodyPackRequest {
+                provenance,
+                output_dir,
+                identities: identity,
+                passphrase_files: passphrase_file,
+                passphrase_os_keys: passphrase_os_key,
+                threshold,
+                require_clean_git,
+            })?),
         },
         Commands::Approval { command } => match command {
             ApprovalCommands::Verify { queue } => {
@@ -2267,6 +2364,36 @@ struct DashboardServeRequest {
     max_requests: Option<u32>,
 }
 
+struct MapServeRequest {
+    input: PathBuf,
+    ledger: PathBuf,
+    bind: String,
+    title: String,
+    refresh_seconds: u64,
+    max_requests: Option<u32>,
+}
+
+struct ReleaseCustodyPackRequest {
+    provenance: PathBuf,
+    output_dir: PathBuf,
+    identities: Vec<PathBuf>,
+    passphrase_files: Vec<PathBuf>,
+    passphrase_os_keys: Vec<PathBuf>,
+    threshold: usize,
+    require_clean_git: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct TrustedRegistryBundle {
+    schema: u16,
+    authority: String,
+    generated_at: String,
+    registry_sha256: String,
+    active_operators: usize,
+    revoked_operators: usize,
+    operators: Vec<OperatorRegistryEntry>,
+}
+
 fn serve_dashboard(request: DashboardServeRequest) -> Result<Value> {
     let listener = TcpListener::bind(&request.bind)
         .with_context(|| format!("failed to bind dashboard server to {}", request.bind))?;
@@ -2322,6 +2449,60 @@ fn handle_dashboard_stream(request: &DashboardServeRequest, stream: &mut TcpStre
     Ok(())
 }
 
+fn serve_map_console(request: MapServeRequest) -> Result<Value> {
+    let listener = TcpListener::bind(&request.bind)
+        .with_context(|| format!("failed to bind map console server to {}", request.bind))?;
+    let local_addr = listener.local_addr()?;
+    eprintln!("AstraGrid map console serving at http://{local_addr}/map-console.html");
+    let mut served = 0_u32;
+    loop {
+        let (mut stream, _) = listener.accept()?;
+        handle_map_console_stream(&request, &mut stream)?;
+        served += 1;
+        if request
+            .max_requests
+            .is_some_and(|max_requests| served >= max_requests)
+        {
+            break;
+        }
+    }
+    Ok(json!({
+        "bind": local_addr.to_string(),
+        "requests": served,
+    }))
+}
+
+fn handle_map_console_stream(request: &MapServeRequest, stream: &mut TcpStream) -> Result<()> {
+    stream.set_read_timeout(Some(StdDuration::from_secs(5)))?;
+    let mut buffer = [0_u8; 4096];
+    let read = stream.read(&mut buffer)?;
+    let request_text = String::from_utf8_lossy(&buffer[..read]);
+    let path = http_request_path(&request_text).unwrap_or("/");
+    let response = match path {
+        "/" | "/map-console.html" => {
+            let document =
+                build_map_console_document(&request.input, &request.ledger, request.title.clone())?;
+            let html = inject_meta_refresh(&document.to_html(), request.refresh_seconds);
+            http_response("200 OK", "text/html; charset=utf-8", html.as_bytes())
+        }
+        "/state.json" => {
+            let ledger = MissionLedger::open(&request.ledger);
+            let state = MissionState::from_ledger(&ledger)?;
+            let body = serde_json::to_vec_pretty(&state.summary())?;
+            http_response("200 OK", "application/json; charset=utf-8", &body)
+        }
+        "/healthz" => http_response(
+            "200 OK",
+            "application/json; charset=utf-8",
+            br#"{"status":"ok"}"#,
+        ),
+        _ => http_response("404 Not Found", "text/plain; charset=utf-8", b"not found\n"),
+    };
+    stream.write_all(&response)?;
+    stream.flush()?;
+    Ok(())
+}
+
 fn http_request_path(request: &str) -> Option<&str> {
     let mut parts = request.lines().next()?.split_whitespace();
     match (parts.next(), parts.next()) {
@@ -2346,6 +2527,18 @@ fn inject_meta_refresh(html: &str, seconds: u64) -> String {
     }
     let tag = format!("<meta http-equiv=\"refresh\" content=\"{seconds}\">\n");
     html.replacen("</head>", &format!("{tag}</head>"), 1)
+}
+
+fn build_map_console_document(
+    input: &PathBuf,
+    ledger: &PathBuf,
+    title: String,
+) -> Result<MapConsoleDocument> {
+    let text = read_text_file(input)
+        .with_context(|| format!("failed to read feature records {}", input.display()))?;
+    let ledger = MissionLedger::open(ledger);
+    let state = MissionState::from_ledger(&ledger)?;
+    MapConsoleDocument::from_json_lines_and_state(&text, title, &state).map_err(Into::into)
 }
 
 fn export_ops_bundle(request: OpsBundleRequest) -> Result<Value> {
@@ -2613,6 +2806,274 @@ fn powershell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+fn build_registry_trust_bundle(registry_path: &PathBuf) -> Result<TrustedRegistryBundle> {
+    let registry = OperatorRegistry::load_from_file(registry_path)?;
+    let operators = registry.entries().cloned().collect::<Vec<_>>();
+    let active_operators = operators
+        .iter()
+        .filter(|entry| entry.status == OperatorStatus::Active)
+        .count();
+    let revoked_operators = operators
+        .iter()
+        .filter(|entry| entry.status == OperatorStatus::Revoked)
+        .count();
+    Ok(TrustedRegistryBundle {
+        schema: 1,
+        authority: registry.authority().to_owned(),
+        generated_at: OffsetDateTime::now_utc().to_string(),
+        registry_sha256: sha256_file_hex(registry_path)?,
+        active_operators,
+        revoked_operators,
+        operators,
+    })
+}
+
+fn verify_registry_trust_bundle(
+    bundle: &TrustedRegistryBundle,
+    registry: Option<&PathBuf>,
+) -> Result<Value> {
+    let mut checks = Vec::new();
+    checks.push(check_value(
+        "schema",
+        bundle.schema == 1,
+        json!({"schema": bundle.schema}),
+    ));
+    checks.push(check_value(
+        "authority",
+        !bundle.authority.trim().is_empty(),
+        json!({"authority": &bundle.authority}),
+    ));
+
+    let mut ids = BTreeSet::new();
+    let mut unique = true;
+    for entry in &bundle.operators {
+        if !ids.insert(entry.identity.id.clone()) {
+            unique = false;
+        }
+    }
+    checks.push(check_value(
+        "unique_operator_ids",
+        unique,
+        json!({"operators": bundle.operators.len(), "unique_ids": ids.len()}),
+    ));
+
+    let active = bundle
+        .operators
+        .iter()
+        .filter(|entry| entry.status == OperatorStatus::Active)
+        .count();
+    let revoked = bundle
+        .operators
+        .iter()
+        .filter(|entry| entry.status == OperatorStatus::Revoked)
+        .count();
+    checks.push(check_value(
+        "operator_counts",
+        active == bundle.active_operators && revoked == bundle.revoked_operators,
+        json!({
+            "active": active,
+            "declared_active": bundle.active_operators,
+            "revoked": revoked,
+            "declared_revoked": bundle.revoked_operators,
+        }),
+    ));
+
+    if let Some(registry) = registry {
+        let actual = sha256_file_hex(registry)?;
+        checks.push(check_value(
+            "registry_sha256",
+            actual == bundle.registry_sha256,
+            json!({"expected": &bundle.registry_sha256, "actual": actual}),
+        ));
+    }
+
+    let valid = checks
+        .iter()
+        .all(|check| check["status"].as_str() == Some("pass"));
+    Ok(json!({
+        "valid": valid,
+        "authority": &bundle.authority,
+        "active_operators": active,
+        "revoked_operators": revoked,
+        "checks": checks,
+    }))
+}
+
+fn check_value(name: &str, pass: bool, detail: Value) -> Value {
+    json!({
+        "name": name,
+        "status": if pass { "pass" } else { "fail" },
+        "detail": detail,
+    })
+}
+
+fn write_release_custody_pack(request: ReleaseCustodyPackRequest) -> Result<Value> {
+    if request.identities.is_empty() {
+        bail!("at least one --identity is required");
+    }
+    if request.threshold == 0 {
+        bail!("--threshold must be at least 1");
+    }
+    if request.threshold > request.identities.len() {
+        bail!("--threshold cannot exceed the number of identities");
+    }
+    if !request.passphrase_files.is_empty() && !request.passphrase_os_keys.is_empty() {
+        bail!("use either --passphrase-file or --passphrase-os-key, not both");
+    }
+    if !request.passphrase_files.is_empty()
+        && request.passphrase_files.len() != request.identities.len()
+    {
+        bail!("--passphrase-file count must match --identity count");
+    }
+    if !request.passphrase_os_keys.is_empty()
+        && request.passphrase_os_keys.len() != request.identities.len()
+    {
+        bail!("--passphrase-os-key count must match --identity count");
+    }
+
+    fs::create_dir_all(&request.output_dir)
+        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
+    let provenance_parent = request
+        .provenance
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let provenance_parent = fs::canonicalize(provenance_parent)?;
+    let output_dir = fs::canonicalize(&request.output_dir)?;
+    if provenance_parent != output_dir {
+        bail!("release custody pack output_dir must match the provenance file directory");
+    }
+
+    let package = PackageProvenance::load(&request.provenance)?;
+    let package_report = package.verify_hashes(&request.provenance)?;
+    if !package_report.valid {
+        print_json(&package_report)?;
+        bail!("provenance verification failed");
+    }
+
+    let stem = provenance_stem(&request.provenance);
+    let mut signatures = Vec::new();
+    let mut signature_paths = Vec::new();
+    let mut signer_ids = Vec::new();
+    for (index, identity) in request.identities.iter().enumerate() {
+        let passphrase_file = request.passphrase_files.get(index);
+        let passphrase_os_key = request.passphrase_os_keys.get(index);
+        let keypair = load_keypair(identity, passphrase_file, passphrase_os_key)?;
+        let envelope = ProvenanceSignatureEnvelope::sign_file(&request.provenance, &keypair)?;
+        let signature_path = if request.identities.len() == 1 {
+            default_signature_output_path(&request.provenance)
+        } else {
+            request.output_dir.join(format!(
+                "{}.{}.sig.json",
+                stem,
+                sanitize_file_component(&envelope.signature.identity.id)
+            ))
+        };
+        write_json_file(&signature_path, &envelope)?;
+        let report = envelope.verify(&signature_path)?;
+        if !report.valid {
+            print_json(&report)?;
+            bail!("provenance signature verification failed");
+        }
+        signer_ids.push(envelope.signature.identity.id.clone());
+        signature_paths.push(signature_path);
+        signatures.push(envelope);
+    }
+
+    let distinct_signers = signer_ids.iter().collect::<BTreeSet<_>>();
+    if distinct_signers.len() < request.threshold {
+        bail!("distinct signer count is below the requested threshold");
+    }
+
+    let quorum = ProvenanceQuorumEnvelope::new(request.threshold, signatures)?;
+    let quorum_path = request.output_dir.join(format!("{stem}.quorum.json"));
+    write_json_file(&quorum_path, &quorum)?;
+    let quorum_report = quorum.verify(&quorum_path)?;
+    if !quorum_report.valid {
+        print_json(&quorum_report)?;
+        bail!("provenance quorum verification failed");
+    }
+
+    signer_ids.sort();
+    signer_ids.dedup();
+    let policy = ReleaseCustodyPolicy {
+        schema: 1,
+        package: Some(package.package.clone()),
+        version: Some(package.version.clone()),
+        target: Some(package.target.clone()),
+        min_distinct_valid_signers: request.threshold,
+        required_signer_ids: signer_ids.clone(),
+        allowed_signer_ids: signer_ids.clone(),
+        require_clean_git: request.require_clean_git,
+    };
+    policy.validate()?;
+    let policy_path = request
+        .output_dir
+        .join(format!("{stem}.release-policy.json"));
+    write_json_file(&policy_path, &policy)?;
+    let policy_report = policy.verify(&package, &quorum_report)?;
+    if !policy_report.valid {
+        print_json(&policy_report)?;
+        bail!("release custody policy verification failed");
+    }
+
+    let doctor_report = run_release_doctor(ReleaseDoctorInput {
+        provenance: request.provenance.clone(),
+        signatures: signature_paths.clone(),
+        quorum: Some(quorum_path.clone()),
+        policy: Some(policy_path.clone()),
+    });
+    if doctor_report.failures > 0 || doctor_report.warnings > 0 {
+        print_json(&doctor_report)?;
+        bail!("release doctor did not reach healthy status");
+    }
+
+    let manifest_path = request
+        .output_dir
+        .join(format!("{stem}.custody-manifest.json"));
+    let manifest = json!({
+        "schema": 1,
+        "generated_at": OffsetDateTime::now_utc().to_string(),
+        "provenance": request.provenance.file_name().and_then(|name| name.to_str()).unwrap_or("provenance.json"),
+        "signatures": signature_paths.iter().map(|path| path.file_name().and_then(|name| name.to_str()).unwrap_or("signature.json")).collect::<Vec<_>>(),
+        "quorum": quorum_path.file_name().and_then(|name| name.to_str()).unwrap_or("quorum.json"),
+        "policy": policy_path.file_name().and_then(|name| name.to_str()).unwrap_or("release-policy.json"),
+        "threshold": request.threshold,
+        "signer_ids": signer_ids,
+        "doctor_status": doctor_report.status,
+    });
+    write_json_file(&manifest_path, &manifest)?;
+
+    Ok(json!({
+        "output_dir": request.output_dir,
+        "manifest": manifest_path,
+        "signatures": signature_paths,
+        "quorum": quorum_path,
+        "policy": policy_path,
+        "threshold": request.threshold,
+        "doctor_status": doctor_report.status,
+    }))
+}
+
+fn provenance_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| "provenance".to_owned())
+}
+
+fn sanitize_file_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 fn build_dashboard_document(
     ledger_path: &PathBuf,
     title: String,
@@ -2733,6 +3194,21 @@ fn read_json_file<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Result<T> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+fn sha256_file_hex(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to read file for sha256 {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 fn strip_utf8_bom(bytes: &mut Vec<u8>) {
     const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
     if bytes.starts_with(UTF8_BOM) {
@@ -2842,9 +3318,10 @@ mod tests {
     use super::{
         Cli, Commands, DashboardCommands, DoctorCommands, GeoCommands, IdentityCommands,
         OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands, RecommendCommands,
-        acceptance_scenario, default_signature_output_path, export_ops_bundle, http_request_path,
-        http_response, inject_meta_refresh, read_payload, render_acceptance_script,
-        write_acceptance_pack,
+        ReleaseCustodyPackRequest, acceptance_scenario, build_registry_trust_bundle,
+        default_signature_output_path, export_ops_bundle, http_request_path, http_response,
+        inject_meta_refresh, read_payload, render_acceptance_script, sha256_file_hex,
+        verify_registry_trust_bundle, write_acceptance_pack, write_release_custody_pack,
     };
 
     #[test]
@@ -2903,6 +3380,49 @@ mod tests {
             } => {
                 assert_eq!(input, PathBuf::from("secrets/passphrase.txt"));
                 assert_eq!(output, PathBuf::from("secrets/passphrase.oskey.json"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_identity_registry_bundle_commands() {
+        let bundle = Cli::try_parse_from([
+            "astragrid",
+            "identity",
+            "registry-bundle",
+            "--registry",
+            "data/operators.agregistry",
+            "--output",
+            "ops/trust-bundle.json",
+        ])
+        .unwrap();
+        match bundle.command {
+            Commands::Identity {
+                command: IdentityCommands::RegistryBundle { registry, output },
+            } => {
+                assert_eq!(registry, PathBuf::from("data/operators.agregistry"));
+                assert_eq!(output, PathBuf::from("ops/trust-bundle.json"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let verify = Cli::try_parse_from([
+            "astragrid",
+            "identity",
+            "registry-verify-bundle",
+            "--input",
+            "ops/trust-bundle.json",
+            "--registry",
+            "data/operators.agregistry",
+        ])
+        .unwrap();
+        match verify.command {
+            Commands::Identity {
+                command: IdentityCommands::RegistryVerifyBundle { input, registry },
+            } => {
+                assert_eq!(input, PathBuf::from("ops/trust-bundle.json"));
+                assert_eq!(registry, Some(PathBuf::from("data/operators.agregistry")));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -3006,6 +3526,68 @@ mod tests {
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_geo_serve_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "geo",
+            "serve",
+            "--input",
+            "features.jsonl",
+            "--ledger",
+            "data/mission.agl",
+            "--bind",
+            "127.0.0.1:18081",
+            "--refresh-seconds",
+            "4",
+            "--max-requests",
+            "1",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Geo {
+                command:
+                    GeoCommands::Serve {
+                        input,
+                        ledger,
+                        bind,
+                        refresh_seconds,
+                        max_requests,
+                        ..
+                    },
+            } => {
+                assert_eq!(input, PathBuf::from("features.jsonl"));
+                assert_eq!(ledger, PathBuf::from("data/mission.agl"));
+                assert_eq!(bind, "127.0.0.1:18081");
+                assert_eq!(refresh_seconds, 4);
+                assert_eq!(max_requests, Some(1));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn writes_and_verifies_registry_trust_bundle() {
+        use astragrid_core::{OperatorKeypair, OperatorRegistry, Role};
+
+        let dir = tempdir().unwrap();
+        let registry_path = dir.path().join("operators.agregistry");
+        let keypair = OperatorKeypair::generate("lead", Role::Operator);
+        let mut registry = OperatorRegistry::new("district-ca");
+        registry
+            .enroll(keypair.identity().clone(), "district-ca")
+            .unwrap();
+        registry.save_to_file(&registry_path).unwrap();
+
+        let bundle = build_registry_trust_bundle(&registry_path).unwrap();
+        let report = verify_registry_trust_bundle(&bundle, Some(&registry_path)).unwrap();
+
+        assert_eq!(bundle.authority, "district-ca");
+        assert_eq!(bundle.active_operators, 1);
+        assert!(report["valid"].as_bool().unwrap());
     }
 
     #[test]
@@ -3356,6 +3938,121 @@ mod tests {
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_provenance_custody_pack_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "provenance",
+            "custody-pack",
+            "--provenance",
+            "dist/package.provenance.json",
+            "--output-dir",
+            "dist",
+            "--identity",
+            "data/operators/release.agkey",
+            "--passphrase-file",
+            "data/operators/release.pass",
+            "--threshold",
+            "1",
+            "--require-clean-git",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Provenance {
+                command:
+                    ProvenanceCommands::CustodyPack {
+                        provenance,
+                        output_dir,
+                        identity,
+                        passphrase_file,
+                        threshold,
+                        require_clean_git,
+                        ..
+                    },
+            } => {
+                assert_eq!(provenance, PathBuf::from("dist/package.provenance.json"));
+                assert_eq!(output_dir, PathBuf::from("dist"));
+                assert_eq!(
+                    identity,
+                    vec![PathBuf::from("data/operators/release.agkey")]
+                );
+                assert_eq!(
+                    passphrase_file,
+                    vec![PathBuf::from("data/operators/release.pass")]
+                );
+                assert_eq!(threshold, 1);
+                assert!(require_clean_git);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn writes_release_custody_pack_with_healthy_doctor() {
+        use astragrid_core::{OperatorKeypair, Role};
+        use astragrid_provenance::{PackageProvenance, ProvenanceFile};
+
+        let dir = tempdir().unwrap();
+        let artifact = dir.path().join("artifact.zip");
+        let binary = dir.path().join("astragrid.exe");
+        fs::write(&artifact, b"release artifact").unwrap();
+        fs::write(&binary, b"release binary").unwrap();
+        let provenance_path = dir.path().join("artifact.provenance.json");
+        let provenance = PackageProvenance {
+            schema: 1,
+            package: "astragrid".to_owned(),
+            version: "0.1.0".to_owned(),
+            target: "windows-x64".to_owned(),
+            generated_at: "2026-05-07T00:00:00Z".to_owned(),
+            artifact: Some(ProvenanceFile {
+                path: PathBuf::from("artifact.zip"),
+                sha256: sha256_file_hex(&artifact).unwrap(),
+            }),
+            binary: Some(ProvenanceFile {
+                path: PathBuf::from("astragrid.exe"),
+                sha256: sha256_file_hex(&binary).unwrap(),
+            }),
+            included_files: Vec::new(),
+            toolchain: json!({}),
+            git: json!({"dirty": false}),
+        };
+        fs::write(
+            &provenance_path,
+            serde_json::to_vec_pretty(&provenance).unwrap(),
+        )
+        .unwrap();
+        let identity = dir.path().join("release.agkey");
+        OperatorKeypair::generate("release", Role::Operator)
+            .save_to_file(&identity)
+            .unwrap();
+
+        let result = write_release_custody_pack(ReleaseCustodyPackRequest {
+            provenance: provenance_path.clone(),
+            output_dir: dir.path().to_path_buf(),
+            identities: vec![identity],
+            passphrase_files: Vec::new(),
+            passphrase_os_keys: Vec::new(),
+            threshold: 1,
+            require_clean_git: true,
+        })
+        .unwrap();
+
+        assert_eq!(result["doctor_status"], "healthy");
+        assert!(dir.path().join("artifact.provenance.sig.json").exists());
+        assert!(dir.path().join("artifact.provenance.quorum.json").exists());
+        assert!(
+            dir.path()
+                .join("artifact.provenance.release-policy.json")
+                .exists()
+        );
+        assert!(
+            dir.path()
+                .join("artifact.provenance.custody-manifest.json")
+                .exists()
+        );
     }
 
     #[test]
