@@ -5,45 +5,45 @@
     {
       "name": "provenance",
       "path": "astragrid-windows-x64-0.1.0.provenance.json",
-      "sha256": "e7fa212b67c7b3ae3bc22531a4b7ccf5800dfb50e2fdf61000e833b51401f456"
+      "sha256": "4391de351e95680ded33f44705d63b975a1835fc08452f12de614ba46fed0267"
     },
     {
       "name": "signature-1",
       "path": "astragrid-windows-x64-0.1.0.provenance.sig.json",
-      "sha256": "04f51cbe017bbae8bff2bcbcdb9cc9bc93362f1bece433b76fa852a7c140665d"
+      "sha256": "a65247fabae716b7c9952ea2279eeb4b7ae85c5fa4d260e43a7536512b5dc8ce"
     },
     {
       "name": "quorum",
       "path": "astragrid-windows-x64-0.1.0.provenance.quorum.json",
-      "sha256": "c00491e13954b13daf72a64c19ec67a7fac47d183b1be771092e61757f84cf43"
+      "sha256": "f4f415527bdbb0674a5f7129bf22817d6ee3fe2687ca79cfd6d2d14d3650cde1"
     },
     {
       "name": "policy",
       "path": "astragrid-windows-x64-0.1.0.provenance.release-policy.json",
-      "sha256": "22c5aca3d58e0f2377ea2b60cf22358162d5c92c8c17ff4830bf5725302a115c"
+      "sha256": "1b271392de3f18c5dbdbb61ff393cc65dfe900a4cdf7816146c16771dc4f576e"
     },
     {
       "name": "doctor-release",
       "path": "doctor-release.json",
-      "sha256": "a53cefba4ff105e9ad6370f171912c500f24aa20de51c130653ad320a0c64c3a"
+      "sha256": "bf858d5dc6356b95439cea59398bd26f4b722efe8917b7bac7d8d87d6a7aa5f5"
     },
     {
       "name": "artifact",
       "path": "astragrid-windows-x64-0.1.0.zip",
-      "sha256": "b3db58b472462fe7d02fce586bc3867cf611ae69157cf88472ed5f6af699e11b"
+      "sha256": "ce6c6df9764b3369ae3038358139c5efc4c1c01be0de5d970b603390498df7d7"
     },
     {
       "name": "binary",
       "path": "astragrid.exe",
-      "sha256": "3fd1b5b49a6175ab5c195d85e3dee6df8e51b84db9de7557eafe5b628e969c83"
+      "sha256": "c7d8d9ac314defe37903058d391cc652f7398548a8efafeb75de0fe55543fd09"
     },
     {
       "name": "custody-manifest",
       "path": "astragrid-windows-x64-0.1.0.provenance.custody-manifest.json",
-      "sha256": "cae25471c511ff42266c932171b6924f2e7bd3c3dc56b19e0b7e490f990d0220"
+      "sha256": "dbb56a34ccc6fdbd60a0f71e88cb219442b16b69c3dc92bf5ae1de31fd0e07f6"
     }
   ],
-  "generated_at": "2026-05-07 19:17:30.5263012 +00:00:00",
+  "generated_at": "2026-05-07 19:39:22.4657294 +00:00:00",
   "package": "astragrid",
   "schema": 1,
   "target": "windows-x64",
