@@ -39,7 +39,7 @@ use astragrid_sync_queue::{
 use astragrid_workflow::{CommandDraft, WorkflowPlanner, actor_from_parts};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
-use time::Duration;
+use time::{Duration, OffsetDateTime};
 
 const DEFAULT_OS_PASSPHRASE_PURPOSE: &str = "astragrid-operator-key-passphrase-v1";
 
@@ -194,6 +194,11 @@ enum Commands {
     Dashboard {
         #[command(subcommand)]
         command: DashboardCommands,
+    },
+    /// Build operator handoff bundles from verified local artifacts.
+    Ops {
+        #[command(subcommand)]
+        command: OpsCommands,
     },
     /// Diagnose local mission artifacts and custody health.
     Doctor {
@@ -681,6 +686,37 @@ enum DashboardCommands {
         evidence_bundle: Vec<PathBuf>,
         #[arg(long)]
         map_href: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OpsCommands {
+    /// Export a handoff folder with dashboard, state, doctor reports, and manifest.
+    Bundle {
+        #[arg(long, default_value = "data/mission.agl")]
+        ledger: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "AstraGrid Operations Bundle")]
+        title: String,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        approvals: Option<PathBuf>,
+        #[arg(long)]
+        identity: Vec<PathBuf>,
+        #[arg(long)]
+        peer_queue: Option<PathBuf>,
+        #[arg(long)]
+        evidence_bundle: Vec<PathBuf>,
+        #[arg(long)]
+        features: Option<PathBuf>,
+        #[arg(long)]
+        provenance: Option<PathBuf>,
+        #[arg(long)]
+        signature: Vec<PathBuf>,
+        #[arg(long)]
+        quorum: Option<PathBuf>,
     },
 }
 
@@ -1659,60 +1695,13 @@ fn main() -> Result<()> {
                 evidence_bundle,
                 map_href,
             } => {
-                let ledger = MissionLedger::open(ledger);
-                let state = MissionState::from_ledger(&ledger)?;
-                let ledger_events = ledger.load_events()?;
-                let recent_from_ledger = || {
-                    let start = ledger_events.len().saturating_sub(20);
-                    ledger_events[start..].to_vec()
-                };
-                let (store_summary, recent_events) = match db {
-                    Some(db) => {
-                        if !db.exists() {
-                            bail!("dashboard DB does not exist: {}", db.display());
-                        }
-                        let store = MissionStore::open(db)?;
-                        (Some(store.summary()?), store.list_recent(20)?)
-                    }
-                    None => (None, recent_from_ledger()),
-                };
-                let approvals = match approvals {
-                    Some(path) => {
-                        if !path.exists() {
-                            bail!("approval log does not exist: {}", path.display());
-                        }
-                        ApprovalLog::open(path).list_items()?
-                    }
-                    None => Vec::new(),
-                };
-                let (queue_summary, peer_health, peer_jobs) = match peer_queue {
-                    Some(path) => {
-                        if !path.exists() {
-                            bail!("peer queue DB does not exist: {}", path.display());
-                        }
-                        let queue = PeerSyncQueue::open(path)?;
-                        (
-                            Some(queue.summary()?),
-                            Some(queue.health(Duration::seconds(600))?),
-                            queue.list(None)?,
-                        )
-                    }
-                    None => (None, None, Vec::new()),
-                };
-                let bundles = evidence_bundle
-                    .iter()
-                    .map(read_json_file::<EvidenceBundle>)
-                    .collect::<Result<Vec<_>>>()?;
-                let dashboard = DashboardDocument::new(
+                let dashboard = build_dashboard_document(
+                    &ledger,
                     title,
-                    state.summary(),
-                    store_summary,
-                    recent_events,
                     approvals,
-                    queue_summary,
-                    peer_health,
-                    peer_jobs,
-                    bundles,
+                    db,
+                    peer_queue,
+                    &evidence_bundle,
                     map_href,
                 )?;
                 write_text_file(&output, &dashboard.to_html())?;
@@ -1727,6 +1716,35 @@ fn main() -> Result<()> {
                     "evidence_bundles": dashboard.evidence_bundles.len(),
                 }))
             }
+        },
+        Commands::Ops { command } => match command {
+            OpsCommands::Bundle {
+                ledger,
+                output_dir,
+                title,
+                db,
+                approvals,
+                identity,
+                peer_queue,
+                evidence_bundle,
+                features,
+                provenance,
+                signature,
+                quorum,
+            } => print_json(&export_ops_bundle(OpsBundleRequest {
+                ledger,
+                output_dir,
+                title,
+                db,
+                approvals,
+                identities: identity,
+                peer_queue,
+                evidence_bundle,
+                features,
+                provenance,
+                signatures: signature,
+                quorum,
+            })?),
         },
         Commands::Doctor { command } => match command {
             DoctorCommands::Workspace {
@@ -1998,6 +2016,195 @@ fn main() -> Result<()> {
     }
 }
 
+struct OpsBundleRequest {
+    ledger: PathBuf,
+    output_dir: PathBuf,
+    title: String,
+    db: Option<PathBuf>,
+    approvals: Option<PathBuf>,
+    identities: Vec<PathBuf>,
+    peer_queue: Option<PathBuf>,
+    evidence_bundle: Vec<PathBuf>,
+    features: Option<PathBuf>,
+    provenance: Option<PathBuf>,
+    signatures: Vec<PathBuf>,
+    quorum: Option<PathBuf>,
+}
+
+fn export_ops_bundle(request: OpsBundleRequest) -> Result<Value> {
+    fs::create_dir_all(&request.output_dir)
+        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
+
+    let map_href = request
+        .features
+        .as_ref()
+        .map(|_| "map-console.html".to_owned());
+    let dashboard = build_dashboard_document(
+        &request.ledger,
+        request.title.clone(),
+        request.approvals.clone(),
+        request.db.clone(),
+        request.peer_queue.clone(),
+        &request.evidence_bundle,
+        map_href,
+    )?;
+
+    let dashboard_path = request.output_dir.join("dashboard.html");
+    write_text_file(&dashboard_path, &dashboard.to_html())?;
+
+    let state_path = request.output_dir.join("state.json");
+    write_json_file(&state_path, &dashboard.state)?;
+
+    let workspace_report = run_doctor(DoctorInput {
+        ledger: request.ledger.clone(),
+        db: request.db.clone(),
+        identities: request.identities.clone(),
+        approvals: request.approvals.clone(),
+        peer_queue: request.peer_queue.clone(),
+    });
+    let workspace_doctor_path = request.output_dir.join("doctor-workspace.json");
+    write_json_file(&workspace_doctor_path, &workspace_report)?;
+
+    let mut files = vec![
+        json!({"name": "dashboard", "path": "dashboard.html", "kind": "html"}),
+        json!({"name": "state", "path": "state.json", "kind": "json"}),
+        json!({"name": "workspace_doctor", "path": "doctor-workspace.json", "kind": "json"}),
+    ];
+
+    let map_console = match request.features {
+        Some(features) => {
+            if !features.exists() {
+                bail!(
+                    "ops bundle feature records do not exist: {}",
+                    features.display()
+                );
+            }
+            let ledger = MissionLedger::open(&request.ledger);
+            let state = MissionState::from_ledger(&ledger)?;
+            let feature_lines = read_text_file(&features)?;
+            let map = MapConsoleDocument::from_json_lines_and_state(
+                &feature_lines,
+                format!("{} Map Console", request.title),
+                &state,
+            )?;
+            let map_path = request.output_dir.join("map-console.html");
+            write_text_file(&map_path, &map.to_html())?;
+            files.push(json!({"name": "map_console", "path": "map-console.html", "kind": "html"}));
+            Some("map-console.html")
+        }
+        None => None,
+    };
+
+    let release_status = match request.provenance {
+        Some(provenance) => {
+            let report = run_release_doctor(ReleaseDoctorInput {
+                provenance,
+                signatures: request.signatures,
+                quorum: request.quorum,
+            });
+            let release_doctor_path = request.output_dir.join("doctor-release.json");
+            write_json_file(&release_doctor_path, &report)?;
+            files.push(
+                json!({"name": "release_doctor", "path": "doctor-release.json", "kind": "json"}),
+            );
+            Some(report.status)
+        }
+        None => None,
+    };
+
+    let file_count = files.len() + 1;
+    let manifest = json!({
+        "schema": 1,
+        "title": request.title,
+        "generated_at": OffsetDateTime::now_utc().to_string(),
+        "mission": &dashboard.state.mission,
+        "state": &dashboard.state,
+        "dashboard": "dashboard.html",
+        "map_console": map_console,
+        "workspace_status": workspace_report.status,
+        "release_status": release_status,
+        "files": &files,
+    });
+    let manifest_path = request.output_dir.join("manifest.json");
+    write_json_file(&manifest_path, &manifest)?;
+
+    Ok(json!({
+        "output_dir": request.output_dir,
+        "manifest": manifest_path,
+        "files": file_count,
+        "workspace_status": workspace_report.status,
+        "release_status": release_status,
+    }))
+}
+
+fn build_dashboard_document(
+    ledger_path: &PathBuf,
+    title: String,
+    approvals: Option<PathBuf>,
+    db: Option<PathBuf>,
+    peer_queue: Option<PathBuf>,
+    evidence_bundle: &[PathBuf],
+    map_href: Option<String>,
+) -> Result<DashboardDocument> {
+    let ledger = MissionLedger::open(ledger_path);
+    let state = MissionState::from_ledger(&ledger)?;
+    let ledger_events = ledger.load_events()?;
+    let recent_from_ledger = || {
+        let start = ledger_events.len().saturating_sub(20);
+        ledger_events[start..].to_vec()
+    };
+    let (store_summary, recent_events) = match db {
+        Some(db) => {
+            if !db.exists() {
+                bail!("dashboard DB does not exist: {}", db.display());
+            }
+            let store = MissionStore::open(db)?;
+            (Some(store.summary()?), store.list_recent(20)?)
+        }
+        None => (None, recent_from_ledger()),
+    };
+    let approvals = match approvals {
+        Some(path) => {
+            if !path.exists() {
+                bail!("approval log does not exist: {}", path.display());
+            }
+            ApprovalLog::open(path).list_items()?
+        }
+        None => Vec::new(),
+    };
+    let (queue_summary, peer_health, peer_jobs) = match peer_queue {
+        Some(path) => {
+            if !path.exists() {
+                bail!("peer queue DB does not exist: {}", path.display());
+            }
+            let queue = PeerSyncQueue::open(path)?;
+            (
+                Some(queue.summary()?),
+                Some(queue.health(Duration::seconds(600))?),
+                queue.list(None)?,
+            )
+        }
+        None => (None, None, Vec::new()),
+    };
+    let bundles = evidence_bundle
+        .iter()
+        .map(read_json_file::<EvidenceBundle>)
+        .collect::<Result<Vec<_>>>()?;
+    DashboardDocument::new(
+        title,
+        state.summary(),
+        store_summary,
+        recent_events,
+        approvals,
+        queue_summary,
+        peer_health,
+        peer_jobs,
+        bundles,
+        map_href,
+    )
+    .map_err(Into::into)
+}
+
 fn summarize_queue_cycle(cycle: u32, results: &[QueueProcessResult]) -> Value {
     let mut succeeded = 0_usize;
     let mut retry_scheduled = 0_usize;
@@ -2150,16 +2357,16 @@ fn print_json<T: serde::Serialize + ?Sized>(value: &T) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write, path::PathBuf};
+    use std::{fs, io::Write, path::PathBuf};
 
     use clap::Parser;
     use serde_json::json;
-    use tempfile::NamedTempFile;
+    use tempfile::{NamedTempFile, tempdir};
 
     use super::{
         Cli, Commands, DashboardCommands, DoctorCommands, GeoCommands, IdentityCommands,
-        PeerQueueCommands, ProvenanceCommands, RecommendCommands, default_signature_output_path,
-        read_payload,
+        OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands, RecommendCommands,
+        default_signature_output_path, export_ops_bundle, read_payload,
     };
 
     #[test]
@@ -2356,6 +2563,90 @@ mod tests {
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_ops_bundle_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "ops",
+            "bundle",
+            "--ledger",
+            "data/mission.agl",
+            "--output-dir",
+            "ops/handoff",
+            "--features",
+            "features.jsonl",
+            "--provenance",
+            "dist/package.provenance.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Ops {
+                command:
+                    OpsCommands::Bundle {
+                        ledger,
+                        output_dir,
+                        features,
+                        provenance,
+                        ..
+                    },
+            } => {
+                assert_eq!(ledger, PathBuf::from("data/mission.agl"));
+                assert_eq!(output_dir, PathBuf::from("ops/handoff"));
+                assert_eq!(features, Some(PathBuf::from("features.jsonl")));
+                assert_eq!(
+                    provenance,
+                    Some(PathBuf::from("dist/package.provenance.json"))
+                );
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exports_ops_bundle_from_verified_ledger() {
+        use astragrid_core::{Action, Actor, CommandRequest, MissionLedger, Priority, Role};
+
+        let dir = tempdir().unwrap();
+        let ledger_path = dir.path().join("mission.agl");
+        let ledger = MissionLedger::open(&ledger_path);
+        ledger
+            .append(CommandRequest::new(
+                Actor::new("kernel", Role::System),
+                Action::OpenMission,
+                "mission-alpha",
+                Priority::Elevated,
+                json!({"mission": "mission-alpha"}),
+            ))
+            .unwrap();
+        let output_dir = dir.path().join("handoff");
+
+        let result = export_ops_bundle(OpsBundleRequest {
+            ledger: ledger_path,
+            output_dir: output_dir.clone(),
+            title: "Mission Alpha".to_owned(),
+            db: None,
+            approvals: None,
+            identities: Vec::new(),
+            peer_queue: None,
+            evidence_bundle: Vec::new(),
+            features: None,
+            provenance: None,
+            signatures: Vec::new(),
+            quorum: None,
+        })
+        .unwrap();
+
+        assert_eq!(result["files"], 4);
+        assert!(output_dir.join("dashboard.html").exists());
+        assert!(output_dir.join("state.json").exists());
+        assert!(output_dir.join("doctor-workspace.json").exists());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output_dir.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["workspace_status"], "healthy");
+        assert_eq!(manifest["mission"], "mission-alpha");
     }
 
     #[test]

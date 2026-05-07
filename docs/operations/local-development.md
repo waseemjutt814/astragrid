@@ -283,6 +283,14 @@ cargo run -q -p astragrid -- dashboard export --ledger $ledger --db $db --output
 cargo run -q -p astragrid -- doctor workspace --ledger $ledger --db $db --identity $key --approvals $approvals --peer-queue $peerQueue
 ```
 
+## Operator Handoff Bundle Smoke Test
+
+```powershell
+$opsBundle = ".cache\ops-bundle-$id"
+cargo run -q -p astragrid -- ops bundle --ledger $ledger --db $db --approvals $approvals --identity $key --peer-queue $peerQueue --features $geoOut --output-dir $opsBundle --title "Flood Watch Handoff"
+Get-ChildItem $opsBundle
+```
+
 ## Package Smoke Test
 
 ```powershell

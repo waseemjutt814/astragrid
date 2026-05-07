@@ -43,13 +43,14 @@ evidence-to-command workflow drafting, and a CLI.
 - Self-contained operator dashboard export with peer health status, recent errors, and map links.
 - Workspace doctor for ledger, state, store, key, approval, and peer queue checks.
 - Release doctor for package provenance, detached signature, and quorum readiness checks.
+- Operator handoff bundle export with dashboard, state, doctor reports, optional map console, and manifest.
 - Payload size limit and deterministic payload hashing.
 - Release provenance verification with fail-closed SHA-256 checks for packaged artifacts.
 - Optional operator-signed provenance envelopes for release custody.
 - Multi-signature provenance quorum verification with distinct signer thresholds.
 - Deterministic supervisor artifact generation for peer queue workers.
 - Peer queue health telemetry snapshots.
-- `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
+- `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
 - GitHub Actions CI for formatting, linting, tests, build, and docs.
 - Release packaging emits SHA-256 provenance JSON.
 

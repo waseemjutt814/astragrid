@@ -20,6 +20,7 @@ workflow command draft -> approval log -> signed ledger append
 scenario file -> ledger/state/store assertions
 mission artifacts -> dashboard export
 workspace artifacts -> doctor report
+verified artifacts -> ops handoff bundle
 ```
 
 ## Mission Ledger
@@ -203,6 +204,13 @@ checks, not for replacing unit tests.
 artifacts. The CLI assembles ledger state, recent events, optional store summary, approvals, peer
 queue state, peer health telemetry, evidence bundles, and a map link. The renderer escapes text,
 surfaces queue health as a status banner, and does not require a web server.
+
+## Operator Handoff Bundle
+
+`ops bundle` creates a handoff directory from verified local artifacts. It writes the dashboard,
+state summary, workspace doctor report, manifest, and optional map console or release doctor
+report. The manifest records only generated bundle-relative files so it can be copied to another
+operator without embedding local workstation paths.
 
 ## Workspace Doctor
 
