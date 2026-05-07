@@ -7,7 +7,7 @@ encrypted local signing identities, trusted operator registry, SQLite indexing, 
 ingestion, evidence bundles, authenticated peer snapshots, offline sync planning, encrypted
 artifact sealing, materialized mission state, report export, packaging scripts, approval-gated
 workflow execution, executable acceptance scenarios, operator dashboard export, workspace doctor,
-admission policy checks,
+admission policy checks, signed local team sessions, secure device pairing grants,
 evidence-to-command workflow drafting, and a CLI.
 
 ## What Exists Now
@@ -22,6 +22,9 @@ evidence-to-command workflow drafting, and a CLI.
 - Trusted operator registry with enrollment and revocation checks.
 - Public registry trust bundle export and verification for multi-host handoff.
 - Verified registry trust bundle import with conflict checks and revocation-dominant merge behavior.
+- Signed local team sessions that verify registry fingerprint, active identity, signature, and expiry.
+- Team-authorized signed append path that requires both a valid session and the matching operator key.
+- Signed device pairing grants with expiry, registry binding, and fail-closed verification.
 - First-run setup that creates a local workspace profile, encrypted operator key, registry, genesis ledger, store DB, and required folders.
 - Workspace profile doctor validation for configured local paths and artifacts.
 - Operator key rotation that revokes the old id, enrolls the new encrypted key, and writes rotation proof.
@@ -70,7 +73,7 @@ evidence-to-command workflow drafting, and a CLI.
 - Peer worker service kits with generated install and uninstall wrappers.
 - Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.
-- `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
+- `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `identity`, `team`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
 - GitHub Actions CI for formatting, linting, tests, build, and docs.
 - Release packaging emits SHA-256 provenance JSON and includes Windows launch/smoke helpers.
 
@@ -84,8 +87,10 @@ cargo run -p astragrid -- init --mission flood-watch --ledger data/mission.agl
 cargo run -p astragrid -- identity create --path data/operators/lead.agkey --name lead --role incident_commander --passphrase-file data/operators/lead.pass
 cargo run -p astragrid -- identity registry-init --registry data/operators/operators.agregistry --authority local-command
 cargo run -p astragrid -- identity enroll --registry data/operators/operators.agregistry --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --issued-by local-command
+New-Item -ItemType Directory -Force data/sessions | Out-Null
+cargo run -p astragrid -- team session-issue --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --registry data/operators/operators.agregistry --output data/sessions/lead.session.json --ttl-minutes 480
 '{ "water_level_m": 5.2 }' | Set-Content -Encoding UTF8 data/river-east.json
-cargo run -p astragrid -- append-signed --ledger data/mission.agl --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --registry data/operators/operators.agregistry --action declare_incident --subject river-east --priority critical --payload '@data/river-east.json'
+cargo run -p astragrid -- team append --ledger data/mission.agl --identity data/operators/lead.agkey --passphrase-file data/operators/lead.pass --registry data/operators/operators.agregistry --session data/sessions/lead.session.json --action declare_incident --subject river-east --priority critical --payload '@data/river-east.json'
 cargo run -p astragrid -- verify --ledger data/mission.agl
 cargo run -p astragrid -- store ingest --ledger data/mission.agl --db data/mission.db
 cargo run -p astragrid -- store summary --db data/mission.db

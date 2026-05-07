@@ -40,6 +40,33 @@ The setup command creates:
 The generated operator key is encrypted with the passphrase file. Keep the passphrase file private
 or seal it with `identity os-seal-passphrase` on supported local platforms.
 
+## Team Session And Pairing
+
+Issue a local signed session for the enrolled operator:
+
+```powershell
+.\target\release\astragrid.exe team session-issue --identity ops\field\data\operators\lead.agkey --passphrase-file ops\field\data\operators\lead.pass --registry ops\field\data\operators\operators.agregistry --output ops\field\data\operators\lead.session.json --ttl-minutes 480
+.\target\release\astragrid.exe team session-verify --session ops\field\data\operators\lead.session.json --registry ops\field\data\operators\operators.agregistry
+```
+
+Use the session-gated append path when a local team login should be required in addition to the
+operator signing key:
+
+```powershell
+.\target\release\astragrid.exe team authorize --session ops\field\data\operators\lead.session.json --registry ops\field\data\operators\operators.agregistry --action declare_incident --subject river-east --priority critical --payload '{"water_level_m":5.2}'
+.\target\release\astragrid.exe team append --ledger ops\field\data\mission.agl --identity ops\field\data\operators\lead.agkey --passphrase-file ops\field\data\operators\lead.pass --registry ops\field\data\operators\operators.agregistry --session ops\field\data\operators\lead.session.json --action declare_incident --subject river-east --priority critical --payload '{"water_level_m":5.2}'
+```
+
+Create and verify a signed device pairing grant:
+
+```powershell
+.\target\release\astragrid.exe team pair-create --identity ops\field\data\operators\lead.agkey --passphrase-file ops\field\data\operators\lead.pass --registry ops\field\data\operators\operators.agregistry --device-id field-tablet-01 --device-name "Field Tablet 01" --output ops\field\data\operators\field-tablet-01.pairing.json --ttl-minutes 1440
+.\target\release\astragrid.exe team pair-verify --input ops\field\data\operators\field-tablet-01.pairing.json --registry ops\field\data\operators\operators.agregistry
+```
+
+Sessions and pairing grants fail closed when the signature, registry fingerprint, active identity,
+or expiry check fails.
+
 ## Backup
 
 ```powershell
@@ -107,5 +134,7 @@ Delete only after reviewing the report:
 - Wrong backup or vault passphrase: command fails closed during sealed artifact open.
 - Corrupt ledger: `verify`, `doctor workspace`, and `doctor profile` report failure.
 - Missing key: profile doctor reports the identity path failure.
+- Expired or revoked team session: `team session-verify`, `team authorize`, and `team append` fail.
+- Broken pairing grant: `team pair-verify` fails before a device is trusted.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

@@ -29,12 +29,15 @@ gated until those inputs exist.
 - **Ready-to-use operator core:** `setup first-run`, `doctor profile`, sealed workspace
   backup/restore, operator key rotation proof, and encrypted ledger vault commands now have parser
   and executable tests.
+- **Local team security core:** `team session-issue`, `team session-verify`, `team authorize`,
+  `team append`, `team pair-create`, and `team pair-verify` add signed local sessions,
+  registry-bound permission checks, and signed device pairing grants with executable tests.
 
 ## A-to-Z Delivery Gates
 
 | ID | Capability | Honest completion gate |
 | --- | --- | --- |
-| A | Multi-user authentication | Local role model, operator registry, and approvals are present; complete auth needs a real service boundary with account sessions and revocation tests. |
+| A | Multi-user authentication | Complete for local CLI operation: signed sessions bind an enrolled active operator to a registry digest, expiry, and detached signature; remote service sessions remain gated on the service boundary. |
 | B | Encrypted backups and restore | Complete for local workspaces: `ops backup` seals profile, ledger, store, registry, key/passphrase files, approvals when present, peer queue when present, and reports; `ops restore` validates hashes and refuses overwrite unless requested. |
 | C | Remote certificate authority | Not started until a real CA root, enrollment policy, and rotation procedure exist. |
 | D | Encrypted ledgers at rest | Complete for the vault runtime path: `vault init`, `vault append`, `vault verify`, and `vault tail` operate on a sealed ledger file as the primary at-rest artifact. Signed vault append remains a future hardening item. |
@@ -52,8 +55,8 @@ gated until those inputs exist.
 | P | Policy rule pack system | Core policy exists; pack system needs signed rule bundles and compatibility checks. |
 | Q | Quorum enrollment for operators | Release quorum exists; operator enrollment quorum needs registry admission flow changes. |
 | R | Replication daemon with service hardening | Peer queue worker and supervisor kits exist; replication daemon needs lifecycle hardening. |
-| S | Secure device pairing | Not complete until pairing keys, expiry, revocation, and UX are implemented. |
-| T | Team roles and permissions | Role model exists; teams need scoped permissions and cross-command enforcement tests. |
+| S | Secure device pairing | Complete for local signed pairing grants: pairing bundles bind device id/name, operator identity, registry digest, expiry, and signature. Network UX and revocation distribution remain future service work. |
+| T | Team roles and permissions | Complete for the team-authenticated signed append path: sessions verify registry status and policy before mutation. Broader service/API command enforcement remains gated on the long-running service boundary. |
 | U | `astragrid-ai` evidence-bound runner crate | Deterministic and structured recommendation paths exist; runner crate needs sandboxed execution and citation enforcement. |
 | V | Visual dashboard app | Dashboard HTML exists; native/web app waits for storage budget and real runtime choice. |
 | W | Worker watchdog with live service recovery | Supervisor artifacts exist; watchdog needs process health policy and recovery tests. |
@@ -63,9 +66,9 @@ gated until those inputs exist.
 
 ## Next No-Fake Order
 
-1. Add secure device pairing and multi-user auth once long-running service boundaries are in place.
-2. Add signed policy rule packs and quorum enrollment for sensitive operator changes.
-3. Add federation daemon service hardening and worker watchdog recovery.
+1. Add signed policy rule packs and quorum enrollment for sensitive operator changes.
+2. Add federation daemon service hardening and worker watchdog recovery.
+3. Add service-bound team sessions once the long-running API boundary exists.
 4. Add platform package expansion only when signing/notary/release-channel credentials exist.
 5. Add hardware keys, remote CA, notarization, and update channels only when real credentials or real
    hardware are available.

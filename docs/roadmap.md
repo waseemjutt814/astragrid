@@ -87,3 +87,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add `identity rotate` to revoke an old operator id, create a new encrypted key, enroll it, and write rotation proof.
 - [x] Add encrypted-at-rest `vault` ledger runtime commands for init, append, verify, and tail without storing a plaintext ledger as the primary artifact.
 - [x] Extend the acceptance pack so fresh-machine style runs cover first-run setup, profile doctor, backup/restore, key rotation, and encrypted vault operations.
+
+## Next Wave: Local Team Security Core
+
+- [x] Add signed local team sessions with registry fingerprint binding, active-identity checks, expiry, and detached signature verification.
+- [x] Add `team authorize` for policy checks through a verified session.
+- [x] Add `team append` so mission mutation can require a valid team session plus the matching operator signing key.
+- [x] Add signed device pairing grants with device id/name, operator identity, registry digest, expiry, and verification.
+- [x] Extend the acceptance pack and unit tests to cover session issue/verify, authorization, authenticated append, and pairing verify.

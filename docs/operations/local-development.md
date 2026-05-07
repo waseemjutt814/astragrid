@@ -387,6 +387,10 @@ cargo run -q -p astragrid -- setup first-run --root $root --mission flood-watch 
 cargo run -q -p astragrid -- doctor profile --profile "$root\astragrid.profile.json"
 cargo run -q -p astragrid -- ops backup --profile "$root\astragrid.profile.json" --output "$root\data\backups\workspace.sealed.json" --passphrase-file "$root\data\operators\lead.pass"
 cargo run -q -p astragrid -- ops restore --input "$root\data\backups\workspace.sealed.json" --output-dir ".cache\ready-restore" --passphrase-file "$root\data\operators\lead.pass"
+cargo run -q -p astragrid -- team session-issue --identity "$root\data\operators\lead.agkey" --passphrase-file "$root\data\operators\lead.pass" --registry "$root\data\operators\operators.agregistry" --output "$root\data\operators\lead.session.json" --ttl-minutes 30
+cargo run -q -p astragrid -- team session-verify --session "$root\data\operators\lead.session.json" --registry "$root\data\operators\operators.agregistry"
+cargo run -q -p astragrid -- team pair-create --identity "$root\data\operators\lead.agkey" --passphrase-file "$root\data\operators\lead.pass" --registry "$root\data\operators\operators.agregistry" --device-id field-tablet-01 --device-name "Field Tablet 01" --output "$root\data\operators\field-tablet-01.pairing.json" --ttl-minutes 30
+cargo run -q -p astragrid -- team pair-verify --input "$root\data\operators\field-tablet-01.pairing.json" --registry "$root\data\operators\operators.agregistry"
 cargo run -q -p astragrid -- vault init --ledger "$root\data\mission.vault.json" --passphrase-file "$root\data\operators\lead.pass" --mission flood-watch
 cargo run -q -p astragrid -- vault verify --ledger "$root\data\mission.vault.json" --passphrase-file "$root\data\operators\lead.pass"
 ```

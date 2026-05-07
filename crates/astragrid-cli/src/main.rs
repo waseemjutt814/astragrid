@@ -10,9 +10,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use astragrid_approvals::{ApprovalLog, ApprovalStatus};
 use astragrid_core::{
-    Action, Actor, CommandRequest, MissionLedger, OperatorKeypair, OperatorRegistry,
-    OperatorRegistryEntry, OperatorStatus, PAYLOAD_LIMIT_BYTES, Priority, RegistryImportStatus,
-    Role,
+    Action, Actor, CommandRequest, DetachedSignature, MissionLedger, OperatorIdentity,
+    OperatorKeypair, OperatorRegistry, OperatorRegistryEntry, OperatorStatus, PAYLOAD_LIMIT_BYTES,
+    Priority, RegistryImportStatus, Role,
 };
 use astragrid_crypto::SealedArtifact;
 use astragrid_dashboard::DashboardDocument;
@@ -53,6 +53,10 @@ const DEFAULT_OS_PASSPHRASE_PURPOSE: &str = "astragrid-operator-key-passphrase-v
 const WORKSPACE_PROFILE_SCHEMA: u16 = 1;
 const WORKSPACE_BACKUP_SCHEMA: u16 = 1;
 const LEDGER_VAULT_AAD: &str = "astragrid-ledger-vault-v1";
+const TEAM_SESSION_SCHEMA: u16 = 1;
+const TEAM_SESSION_PURPOSE: &str = "astragrid-team-session-v1";
+const DEVICE_PAIRING_SCHEMA: u16 = 1;
+const DEVICE_PAIRING_PURPOSE: &str = "astragrid-device-pairing-v1";
 
 #[derive(Debug, Parser)]
 #[command(name = "astragrid")]
@@ -189,6 +193,11 @@ enum Commands {
     Identity {
         #[command(subcommand)]
         command: IdentityCommands,
+    },
+    /// Manage local team sessions, permission gates, and device pairing.
+    Team {
+        #[command(subcommand)]
+        command: TeamCommands,
     },
     /// Maintain the local SQLite mission index.
     Store {
@@ -423,6 +432,96 @@ enum IdentityCommands {
         input: PathBuf,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TeamCommands {
+    /// Issue a signed local operator session from an enrolled identity.
+    SessionIssue {
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_os_key: Option<PathBuf>,
+        #[arg(long, default_value_t = 480)]
+        ttl_minutes: i64,
+    },
+    /// Verify a signed local operator session against the registry.
+    SessionVerify {
+        #[arg(long)]
+        session: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
+    },
+    /// Check whether a session can perform a mission action.
+    Authorize {
+        #[arg(long)]
+        session: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        action: Action,
+        #[arg(long, default_value_t = Priority::Routine)]
+        priority: Priority,
+        #[arg(long, default_value = "authorization-check")]
+        subject: String,
+        #[arg(long, default_value = "{}")]
+        payload: String,
+    },
+    /// Append a signed command only after a valid team session authorizes it.
+    Append {
+        #[arg(long, default_value = "data/mission.agl")]
+        ledger: PathBuf,
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_os_key: Option<PathBuf>,
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        session: PathBuf,
+        #[arg(long)]
+        action: Action,
+        #[arg(long)]
+        subject: String,
+        #[arg(long, default_value_t = Priority::Routine)]
+        priority: Priority,
+        #[arg(long, default_value = "{}")]
+        payload: String,
+    },
+    /// Create a signed device pairing grant for one enrolled operator.
+    PairCreate {
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        device_id: String,
+        #[arg(long)]
+        device_name: String,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_os_key: Option<PathBuf>,
+        #[arg(long, default_value_t = 1440)]
+        ttl_minutes: i64,
+    },
+    /// Verify a signed device pairing grant against the registry.
+    PairVerify {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
     },
 }
 
@@ -1620,6 +1719,94 @@ fn main() -> Result<()> {
                 input,
                 dry_run,
             } => print_json(&import_registry_trust_bundle(&registry, &input, dry_run)?),
+        },
+        Commands::Team { command } => match command {
+            TeamCommands::SessionIssue {
+                identity,
+                registry,
+                output,
+                passphrase_file,
+                passphrase_os_key,
+                ttl_minutes,
+            } => print_json(&issue_team_session(TeamSessionIssueRequest {
+                identity,
+                registry,
+                output,
+                passphrase_file,
+                passphrase_os_key,
+                ttl_minutes,
+            })?),
+            TeamCommands::SessionVerify { session, registry } => {
+                let report = verify_team_session_file(&session, &registry)?;
+                print_json(&report)?;
+                if !report.valid {
+                    bail!("team session verification failed");
+                }
+                Ok(())
+            }
+            TeamCommands::Authorize {
+                session,
+                registry,
+                action,
+                priority,
+                subject,
+                payload,
+            } => {
+                let payload = read_payload(&payload)?;
+                print_json(&authorize_team_action(
+                    &session, &registry, action, priority, subject, payload,
+                )?)
+            }
+            TeamCommands::Append {
+                ledger,
+                identity,
+                passphrase_file,
+                passphrase_os_key,
+                registry,
+                session,
+                action,
+                subject,
+                priority,
+                payload,
+            } => print_json(&team_append_signed(TeamAppendRequest {
+                ledger,
+                identity,
+                passphrase_file,
+                passphrase_os_key,
+                registry,
+                session,
+                action,
+                subject,
+                priority,
+                payload: read_payload(&payload)?,
+            })?),
+            TeamCommands::PairCreate {
+                identity,
+                registry,
+                output,
+                device_id,
+                device_name,
+                passphrase_file,
+                passphrase_os_key,
+                ttl_minutes,
+            } => print_json(&create_device_pairing(DevicePairingRequest {
+                identity,
+                registry,
+                output,
+                device_id,
+                device_name,
+                passphrase_file,
+                passphrase_os_key,
+                ttl_minutes,
+            })?),
+            TeamCommands::PairVerify { input, registry } => {
+                let report = verify_device_pairing_file(&input, &registry)?;
+                print_json(&report)?;
+                if !report.valid {
+                    bail!("device pairing verification failed");
+                }
+                Ok(())
+            }
         },
         Commands::Store { command } => match command {
             StoreCommands::Ingest { ledger, db } => {
@@ -2855,6 +3042,39 @@ struct RestoreRequest {
     overwrite: bool,
 }
 
+struct TeamSessionIssueRequest {
+    identity: PathBuf,
+    registry: PathBuf,
+    output: PathBuf,
+    passphrase_file: Option<PathBuf>,
+    passphrase_os_key: Option<PathBuf>,
+    ttl_minutes: i64,
+}
+
+struct TeamAppendRequest {
+    ledger: PathBuf,
+    identity: PathBuf,
+    passphrase_file: Option<PathBuf>,
+    passphrase_os_key: Option<PathBuf>,
+    registry: PathBuf,
+    session: PathBuf,
+    action: Action,
+    subject: String,
+    priority: Priority,
+    payload: Value,
+}
+
+struct DevicePairingRequest {
+    identity: PathBuf,
+    registry: PathBuf,
+    output: PathBuf,
+    device_id: String,
+    device_name: String,
+    passphrase_file: Option<PathBuf>,
+    passphrase_os_key: Option<PathBuf>,
+    ttl_minutes: i64,
+}
+
 struct RotateOperatorRequest {
     registry: PathBuf,
     old_operator_id: String,
@@ -2942,6 +3162,73 @@ struct KeyRotationProof {
     registry_sha256: String,
     revoked: OperatorRegistryEntry,
     enrolled: OperatorRegistryEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct TeamSession {
+    schema: u16,
+    identity: OperatorIdentity,
+    issued_at_unix: i64,
+    expires_at_unix: i64,
+    registry_sha256: String,
+    nonce: String,
+    signature: DetachedSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct TeamSessionClaims {
+    schema: u16,
+    identity: OperatorIdentity,
+    issued_at_unix: i64,
+    expires_at_unix: i64,
+    registry_sha256: String,
+    nonce: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct TeamSessionVerification {
+    valid: bool,
+    session: PathBuf,
+    registry: PathBuf,
+    identity: OperatorIdentity,
+    expired: bool,
+    checks: Vec<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DevicePairingBundle {
+    schema: u16,
+    device_id: String,
+    device_name: String,
+    operator: OperatorIdentity,
+    issued_at_unix: i64,
+    expires_at_unix: i64,
+    registry_sha256: String,
+    nonce: String,
+    signature: DetachedSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DevicePairingClaims {
+    schema: u16,
+    device_id: String,
+    device_name: String,
+    operator: OperatorIdentity,
+    issued_at_unix: i64,
+    expires_at_unix: i64,
+    registry_sha256: String,
+    nonce: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DevicePairingVerification {
+    valid: bool,
+    input: PathBuf,
+    registry: PathBuf,
+    device_id: String,
+    operator: OperatorIdentity,
+    expired: bool,
+    checks: Vec<Value>,
 }
 
 fn serve_dashboard(request: DashboardServeRequest) -> Result<Value> {
@@ -3562,6 +3849,350 @@ fn rotate_operator_key(request: RotateOperatorRequest) -> Result<Value> {
     }))
 }
 
+fn issue_team_session(request: TeamSessionIssueRequest) -> Result<Value> {
+    if request.ttl_minutes <= 0 {
+        bail!("session ttl must be greater than zero");
+    }
+    let keypair = load_keypair(
+        &request.identity,
+        request.passphrase_file.as_ref(),
+        request.passphrase_os_key.as_ref(),
+    )?;
+    let registry = OperatorRegistry::load_from_file(&request.registry)?;
+    ensure_identity_active_in_registry(keypair.identity(), &registry)?;
+    let registry_sha256 = sha256_file_hex(&request.registry)?;
+    let issued_at_unix = OffsetDateTime::now_utc().unix_timestamp();
+    let expires_at_unix = issued_at_unix
+        .checked_add(request.ttl_minutes.saturating_mul(60))
+        .context("session ttl overflowed")?;
+    let claims = TeamSessionClaims {
+        schema: TEAM_SESSION_SCHEMA,
+        identity: keypair.identity().clone(),
+        issued_at_unix,
+        expires_at_unix,
+        registry_sha256,
+        nonce: random_hex(16),
+    };
+    let digest = sha256_bytes_hex(&serde_json::to_vec(&claims)?);
+    let session = TeamSession {
+        schema: TEAM_SESSION_SCHEMA,
+        identity: claims.identity.clone(),
+        issued_at_unix,
+        expires_at_unix,
+        registry_sha256: claims.registry_sha256.clone(),
+        nonce: claims.nonce,
+        signature: keypair.sign_digest(TEAM_SESSION_PURPOSE, "sha256", &digest)?,
+    };
+    write_json_file(&request.output, &session)?;
+    Ok(json!({
+        "output": request.output,
+        "operator_id": session.identity.id,
+        "role": session.identity.role,
+        "issued_at_unix": session.issued_at_unix,
+        "expires_at_unix": session.expires_at_unix,
+        "registry_sha256": session.registry_sha256,
+    }))
+}
+
+fn verify_team_session_file(
+    session_path: &PathBuf,
+    registry_path: &PathBuf,
+) -> Result<TeamSessionVerification> {
+    let session: TeamSession = read_json_file(session_path)?;
+    verify_team_session(&session, session_path, registry_path)
+}
+
+fn verify_team_session(
+    session: &TeamSession,
+    session_path: &Path,
+    registry_path: &PathBuf,
+) -> Result<TeamSessionVerification> {
+    let registry = OperatorRegistry::load_from_file(registry_path)?;
+    let registry_sha256 = sha256_file_hex(registry_path)?;
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let expired = now >= session.expires_at_unix;
+    let claims = TeamSessionClaims {
+        schema: session.schema,
+        identity: session.identity.clone(),
+        issued_at_unix: session.issued_at_unix,
+        expires_at_unix: session.expires_at_unix,
+        registry_sha256: session.registry_sha256.clone(),
+        nonce: session.nonce.clone(),
+    };
+    let digest = sha256_bytes_hex(&serde_json::to_vec(&claims)?);
+    let signature_valid = session
+        .signature
+        .verify_digest(TEAM_SESSION_PURPOSE, "sha256", &digest)
+        .is_ok();
+    let registry_status = registry_identity_status(&session.identity, &registry);
+    let checks = vec![
+        check_value(
+            "schema",
+            session.schema == TEAM_SESSION_SCHEMA,
+            json!({"schema": session.schema}),
+        ),
+        check_value(
+            "signature",
+            signature_valid && session.signature.identity == session.identity,
+            json!({"purpose": TEAM_SESSION_PURPOSE}),
+        ),
+        check_value(
+            "registry_sha256",
+            session.registry_sha256 == registry_sha256,
+            json!({"expected": session.registry_sha256, "actual": registry_sha256}),
+        ),
+        check_value(
+            "registry_identity",
+            registry_status.is_ok(),
+            json!({"operator_id": session.identity.id, "status": registry_status.err()}),
+        ),
+        check_value(
+            "expiry",
+            !expired,
+            json!({"now_unix": now, "expires_at_unix": session.expires_at_unix}),
+        ),
+    ];
+    let valid = checks
+        .iter()
+        .all(|check| check["status"].as_str() == Some("pass"));
+    Ok(TeamSessionVerification {
+        valid,
+        session: session_path.to_path_buf(),
+        registry: registry_path.clone(),
+        identity: session.identity.clone(),
+        expired,
+        checks,
+    })
+}
+
+fn authorize_team_action(
+    session_path: &PathBuf,
+    registry_path: &PathBuf,
+    action: Action,
+    priority: Priority,
+    subject: String,
+    payload: Value,
+) -> Result<Value> {
+    let report = verify_team_session_file(session_path, registry_path)?;
+    if !report.valid {
+        bail!("team session verification failed");
+    }
+    let request = CommandRequest::new(
+        Actor::from(&report.identity),
+        action,
+        subject,
+        priority,
+        payload,
+    );
+    let decision = astragrid_core::AdmissionPolicy.evaluate(&request);
+    Ok(json!({
+        "authorized": decision.allowed,
+        "session": session_path,
+        "registry": registry_path,
+        "operator_id": report.identity.id,
+        "role": report.identity.role,
+        "decision": decision,
+    }))
+}
+
+fn team_append_signed(request: TeamAppendRequest) -> Result<Value> {
+    let session_report = verify_team_session_file(&request.session, &request.registry)?;
+    if !session_report.valid {
+        bail!("team session verification failed");
+    }
+    let keypair = load_keypair(
+        &request.identity,
+        request.passphrase_file.as_ref(),
+        request.passphrase_os_key.as_ref(),
+    )?;
+    if keypair.identity().id != session_report.identity.id {
+        bail!(
+            "team session operator {} does not match identity {}",
+            session_report.identity.id,
+            keypair.identity().id
+        );
+    }
+    let command = CommandRequest::new(
+        Actor::from(keypair.identity()),
+        request.action,
+        request.subject,
+        request.priority,
+        request.payload,
+    );
+    let decision = astragrid_core::AdmissionPolicy.evaluate(&command);
+    if !decision.allowed {
+        bail!("team session is not authorized: {}", decision.reason);
+    }
+    let registry = OperatorRegistry::load_from_file(&request.registry)?;
+    let ledger = MissionLedger::open(&request.ledger);
+    let event = ledger.append_signed_with_registry(keypair.sign_request(command)?, &registry)?;
+    Ok(json!({
+        "ledger": request.ledger,
+        "session": request.session,
+        "registry": request.registry,
+        "authorized": true,
+        "event": event,
+    }))
+}
+
+fn create_device_pairing(request: DevicePairingRequest) -> Result<Value> {
+    if request.ttl_minutes <= 0 {
+        bail!("pairing ttl must be greater than zero");
+    }
+    validate_pairing_text("device_id", &request.device_id)?;
+    validate_pairing_text("device_name", &request.device_name)?;
+    let keypair = load_keypair(
+        &request.identity,
+        request.passphrase_file.as_ref(),
+        request.passphrase_os_key.as_ref(),
+    )?;
+    let registry = OperatorRegistry::load_from_file(&request.registry)?;
+    ensure_identity_active_in_registry(keypair.identity(), &registry)?;
+    let registry_sha256 = sha256_file_hex(&request.registry)?;
+    let issued_at_unix = OffsetDateTime::now_utc().unix_timestamp();
+    let expires_at_unix = issued_at_unix
+        .checked_add(request.ttl_minutes.saturating_mul(60))
+        .context("pairing ttl overflowed")?;
+    let claims = DevicePairingClaims {
+        schema: DEVICE_PAIRING_SCHEMA,
+        device_id: request.device_id,
+        device_name: request.device_name,
+        operator: keypair.identity().clone(),
+        issued_at_unix,
+        expires_at_unix,
+        registry_sha256,
+        nonce: random_hex(16),
+    };
+    let digest = sha256_bytes_hex(&serde_json::to_vec(&claims)?);
+    let bundle = DevicePairingBundle {
+        schema: DEVICE_PAIRING_SCHEMA,
+        device_id: claims.device_id,
+        device_name: claims.device_name,
+        operator: claims.operator,
+        issued_at_unix,
+        expires_at_unix,
+        registry_sha256: claims.registry_sha256,
+        nonce: claims.nonce,
+        signature: keypair.sign_digest(DEVICE_PAIRING_PURPOSE, "sha256", &digest)?,
+    };
+    write_json_file(&request.output, &bundle)?;
+    Ok(json!({
+        "output": request.output,
+        "device_id": bundle.device_id,
+        "device_name": bundle.device_name,
+        "operator_id": bundle.operator.id,
+        "expires_at_unix": bundle.expires_at_unix,
+    }))
+}
+
+fn verify_device_pairing_file(
+    input: &PathBuf,
+    registry_path: &PathBuf,
+) -> Result<DevicePairingVerification> {
+    let bundle: DevicePairingBundle = read_json_file(input)?;
+    let registry = OperatorRegistry::load_from_file(registry_path)?;
+    let registry_sha256 = sha256_file_hex(registry_path)?;
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let expired = now >= bundle.expires_at_unix;
+    let claims = DevicePairingClaims {
+        schema: bundle.schema,
+        device_id: bundle.device_id.clone(),
+        device_name: bundle.device_name.clone(),
+        operator: bundle.operator.clone(),
+        issued_at_unix: bundle.issued_at_unix,
+        expires_at_unix: bundle.expires_at_unix,
+        registry_sha256: bundle.registry_sha256.clone(),
+        nonce: bundle.nonce.clone(),
+    };
+    let digest = sha256_bytes_hex(&serde_json::to_vec(&claims)?);
+    let signature_valid = bundle
+        .signature
+        .verify_digest(DEVICE_PAIRING_PURPOSE, "sha256", &digest)
+        .is_ok();
+    let registry_status = registry_identity_status(&bundle.operator, &registry);
+    let checks = vec![
+        check_value(
+            "schema",
+            bundle.schema == DEVICE_PAIRING_SCHEMA,
+            json!({"schema": bundle.schema}),
+        ),
+        check_value(
+            "signature",
+            signature_valid && bundle.signature.identity == bundle.operator,
+            json!({"purpose": DEVICE_PAIRING_PURPOSE}),
+        ),
+        check_value(
+            "registry_sha256",
+            bundle.registry_sha256 == registry_sha256,
+            json!({"expected": bundle.registry_sha256, "actual": registry_sha256}),
+        ),
+        check_value(
+            "registry_identity",
+            registry_status.is_ok(),
+            json!({"operator_id": bundle.operator.id, "status": registry_status.err()}),
+        ),
+        check_value(
+            "expiry",
+            !expired,
+            json!({"now_unix": now, "expires_at_unix": bundle.expires_at_unix}),
+        ),
+    ];
+    let valid = checks
+        .iter()
+        .all(|check| check["status"].as_str() == Some("pass"));
+    Ok(DevicePairingVerification {
+        valid,
+        input: input.clone(),
+        registry: registry_path.clone(),
+        device_id: bundle.device_id,
+        operator: bundle.operator,
+        expired,
+        checks,
+    })
+}
+
+fn ensure_identity_active_in_registry(
+    identity: &OperatorIdentity,
+    registry: &OperatorRegistry,
+) -> Result<()> {
+    registry_identity_status(identity, registry).map_err(anyhow::Error::msg)
+}
+
+fn registry_identity_status(
+    identity: &OperatorIdentity,
+    registry: &OperatorRegistry,
+) -> Result<(), String> {
+    let Some(entry) = registry.get(&identity.id) else {
+        return Err("not_enrolled".to_owned());
+    };
+    if entry.status != OperatorStatus::Active {
+        return Err("revoked".to_owned());
+    }
+    if entry.identity != *identity {
+        return Err("identity_mismatch".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_pairing_text(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("{field} cannot be empty");
+    }
+    if value
+        .chars()
+        .any(|character| matches!(character, '\n' | '\r' | '\0'))
+    {
+        bail!("{field} cannot contain newline, carriage return, or NUL");
+    }
+    Ok(())
+}
+
+fn random_hex(bytes: usize) -> String {
+    let mut buffer = vec![0_u8; bytes];
+    OsRng.fill_bytes(&mut buffer);
+    hex::encode(buffer)
+}
+
 fn vault_init(
     vault_path: &PathBuf,
     passphrase_file: &PathBuf,
@@ -3716,6 +4347,8 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "encrypted backup restore",
             "key rotation",
             "encrypted ledger vault",
+            "team session authorization",
+            "secure device pairing",
             "package provenance"
         ]
     });
@@ -3790,6 +4423,8 @@ try {{
     $identity = Join-Path $Run 'lead.agkey'
     $passphrase = Join-Path $Run 'lead.pass'
     $registry = Join-Path $Run 'operators.agregistry'
+    $session = Join-Path $Run 'lead.session.json'
+    $pairing = Join-Path $Run 'field-device.pairing.json'
     $payload = Join-Path $Run 'payload.json'
     $evidence = Join-Path $Run 'evidence.json'
     $bundle = Join-Path $Run 'close-bundle.json'
@@ -3835,7 +4470,12 @@ try {{
     Invoke-AstraGrid identity create --path $identity --name lead --role incident_commander --passphrase-file $passphrase
     Invoke-AstraGrid identity registry-init --registry $registry --authority local-command
     Invoke-AstraGrid identity enroll --registry $registry --identity $identity --passphrase-file $passphrase --issued-by local-command
-    Invoke-AstraGrid append-signed --ledger $ledger --identity $identity --passphrase-file $passphrase --registry $registry --action declare_incident --subject river-east --priority critical --payload "@$payload"
+    Invoke-AstraGrid team session-issue --identity $identity --passphrase-file $passphrase --registry $registry --output $session --ttl-minutes 30
+    Invoke-AstraGrid team session-verify --session $session --registry $registry
+    Invoke-AstraGrid team authorize --session $session --registry $registry --action declare_incident --subject river-east --priority critical --payload "@$payload"
+    Invoke-AstraGrid team append --ledger $ledger --identity $identity --passphrase-file $passphrase --registry $registry --session $session --action declare_incident --subject river-east --priority critical --payload "@$payload"
+    Invoke-AstraGrid team pair-create --identity $identity --passphrase-file $passphrase --registry $registry --device-id field-tablet-01 --device-name 'Field Tablet 01' --output $pairing --ttl-minutes 30
+    Invoke-AstraGrid team pair-verify --input $pairing --registry $registry
     Invoke-AstraGrid verify --ledger $ledger
     Invoke-AstraGrid store ingest --ledger $ledger --db $db
     Invoke-AstraGrid evidence build --mission flood-watch --evidence $evidence --action close_incident --subject river-east --rationale 'Water receded below incident threshold.' --confidence 0.91 --evidence-id sensor-1 --output $bundle
@@ -5043,18 +5683,21 @@ mod tests {
     use tempfile::{NamedTempFile, tempdir};
 
     use super::{
-        ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands, DoctorCommands,
-        FirstRunRequest, GeoCommands, IdentityCommands, OpsBundleRequest, OpsCommands,
-        PeerQueueCommands, ProvenanceCommands, ReadinessGateRequest, RecommendCommands,
-        ReleaseCustodyPackRequest, ReleaseEvidencePackRequest, RestoreRequest,
-        RotateOperatorRequest, SetupCommands, VaultAppendRequest, VaultCommands, WorkspaceProfile,
-        acceptance_scenario, build_registry_trust_bundle, default_signature_output_path,
-        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
-        inject_meta_refresh, read_payload, render_acceptance_script, render_default_launcher,
-        restore_workspace_backup, rotate_operator_key, run_artifact_retention, run_first_run_setup,
-        run_profile_doctor, run_readiness_gate, sha256_file_hex, vault_append, vault_init,
-        vault_tail, vault_verify, verify_registry_trust_bundle, write_acceptance_pack,
-        write_release_custody_pack, write_release_evidence_pack, write_workspace_backup,
+        ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands,
+        DevicePairingRequest, DoctorCommands, FirstRunRequest, GeoCommands, IdentityCommands,
+        OpsBundleRequest, OpsCommands, PeerQueueCommands, ProvenanceCommands, ReadinessGateRequest,
+        RecommendCommands, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest, RestoreRequest,
+        RotateOperatorRequest, SetupCommands, TeamAppendRequest, TeamSessionIssueRequest,
+        VaultAppendRequest, VaultCommands, WorkspaceProfile, acceptance_scenario,
+        authorize_team_action, build_registry_trust_bundle, create_device_pairing,
+        default_signature_output_path, export_ops_bundle, http_request_path, http_response,
+        import_registry_trust_bundle, inject_meta_refresh, issue_team_session, read_payload,
+        render_acceptance_script, render_default_launcher, restore_workspace_backup,
+        rotate_operator_key, run_artifact_retention, run_first_run_setup, run_profile_doctor,
+        run_readiness_gate, sha256_file_hex, team_append_signed, vault_append, vault_init,
+        vault_tail, vault_verify, verify_device_pairing_file, verify_registry_trust_bundle,
+        verify_team_session_file, write_acceptance_pack, write_release_custody_pack,
+        write_release_evidence_pack, write_workspace_backup,
     };
 
     #[test]
@@ -6334,6 +6977,100 @@ mod tests {
             registry.get(new_id).unwrap().status,
             astragrid_core::OperatorStatus::Active
         );
+    }
+
+    #[test]
+    fn team_session_authorizes_signed_append_and_device_pairing() {
+        let dir = tempdir().unwrap();
+        let ledger_path = dir.path().join("mission.agl");
+        let key_path = dir.path().join("lead.agkey");
+        let passphrase_path = dir.path().join("lead.pass");
+        let registry_path = dir.path().join("operators.agregistry");
+        let session_path = dir.path().join("lead.session.json");
+        let pairing_path = dir.path().join("device-pairing.json");
+        fs::write(&passphrase_path, b"team-pass").unwrap();
+
+        let ledger = astragrid_core::MissionLedger::open(&ledger_path);
+        ledger
+            .append(astragrid_core::CommandRequest::new(
+                astragrid_core::Actor::new("kernel", astragrid_core::Role::System),
+                astragrid_core::Action::OpenMission,
+                "team-ready",
+                astragrid_core::Priority::Elevated,
+                json!({"mission": "team-ready"}),
+            ))
+            .unwrap();
+        let keypair = astragrid_core::OperatorKeypair::generate(
+            "lead",
+            astragrid_core::Role::IncidentCommander,
+        );
+        keypair
+            .save_encrypted_to_file(&key_path, b"team-pass")
+            .unwrap();
+        let mut registry = astragrid_core::OperatorRegistry::new("local-command");
+        registry
+            .enroll(keypair.identity().clone(), "local-command")
+            .unwrap();
+        registry.save_to_file(&registry_path).unwrap();
+
+        issue_team_session(TeamSessionIssueRequest {
+            identity: key_path.clone(),
+            registry: registry_path.clone(),
+            output: session_path.clone(),
+            passphrase_file: Some(passphrase_path.clone()),
+            passphrase_os_key: None,
+            ttl_minutes: 30,
+        })
+        .unwrap();
+        let session_report = verify_team_session_file(&session_path, &registry_path).unwrap();
+        assert!(session_report.valid);
+
+        let authorization = authorize_team_action(
+            &session_path,
+            &registry_path,
+            astragrid_core::Action::DeclareIncident,
+            astragrid_core::Priority::Critical,
+            "river-east".to_owned(),
+            json!({"water_level_m": 5.2}),
+        )
+        .unwrap();
+        assert!(authorization["authorized"].as_bool().unwrap());
+
+        let append = team_append_signed(TeamAppendRequest {
+            ledger: ledger_path.clone(),
+            identity: key_path.clone(),
+            passphrase_file: Some(passphrase_path.clone()),
+            passphrase_os_key: None,
+            registry: registry_path.clone(),
+            session: session_path.clone(),
+            action: astragrid_core::Action::DeclareIncident,
+            subject: "river-east".to_owned(),
+            priority: astragrid_core::Priority::Critical,
+            payload: json!({"water_level_m": 5.2}),
+        })
+        .unwrap();
+        assert!(append["authorized"].as_bool().unwrap());
+        assert_eq!(
+            astragrid_core::MissionLedger::open(&ledger_path)
+                .load_events()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        create_device_pairing(DevicePairingRequest {
+            identity: key_path,
+            registry: registry_path.clone(),
+            output: pairing_path.clone(),
+            device_id: "field-tablet-01".to_owned(),
+            device_name: "Field Tablet 01".to_owned(),
+            passphrase_file: Some(passphrase_path),
+            passphrase_os_key: None,
+            ttl_minutes: 30,
+        })
+        .unwrap();
+        let pairing_report = verify_device_pairing_file(&pairing_path, &registry_path).unwrap();
+        assert!(pairing_report.valid);
     }
 
     #[test]

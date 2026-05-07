@@ -117,6 +117,25 @@ entries into a local registry, rejects identity conflicts, and treats revocation
 stale active bundle cannot reactivate a locally revoked operator. The registry remains local
 trust; remote certificate authorities and hardware keys are separate deployment trust roots.
 
+## Local Team Sessions And Pairing
+
+`team session-issue` creates a signed local session for an enrolled operator. The session includes
+the operator identity, issue and expiry timestamps, a random nonce, and the SHA-256 digest of the
+registry that authorized it. `team session-verify` recomputes the session digest, verifies the
+detached signature, checks the registry fingerprint, confirms the identity is still active, and
+fails closed after expiry.
+
+`team authorize` runs the normal mission admission policy through a verified session. `team append`
+uses that gate before writing a mission event and still requires the matching local operator key,
+so session authorization does not replace ledger signatures or registry custody. A stolen session
+without the key cannot mutate the ledger, and a key without an active session cannot use the
+team-authenticated append path.
+
+`team pair-create` writes a signed pairing grant for a device id/name. The grant is bound to an
+active operator, registry fingerprint, expiry, nonce, and detached signature. `team pair-verify`
+validates the grant without guessing any transport or mobile-app behavior. Service-side pairing UX
+and remote revocation distribution are future work for the long-running service boundary.
+
 ## Mission Store
 
 `astragrid-store` indexes verified ledgers into SQLite. Ingest is idempotent and refuses corrupt
