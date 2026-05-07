@@ -5,6 +5,8 @@ AstraGrid is an offline-first mission control kernel for evidence-led crisis ope
 If you are new to the project, start with the plain-language manual:
 `docs/what-is-astragrid.md`.
 
+For the practical developer workflow, see `docs/devops-blackbox.md`.
+
 The current foundation is executable: an append-only mission ledger, hash-chain verification,
 encrypted local signing identities, trusted operator registry, SQLite indexing, GeoJSON feature
 ingestion, evidence bundles, authenticated peer snapshots, offline sync planning and deterministic
@@ -91,6 +93,7 @@ and a CLI.
 - Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.
 - `setup`, `init`, `append`, `append-signed`, `verify`, `tail`, `policy-check`, `policy-pack`, `identity`, `team`, `store`, `state`, `geo`, `evidence`, `sync`, `seal`, `vault`, `net`, `peer-queue`, `harvest`, `recommend`, `report`, `dashboard`, `ui`, `ops`, `doctor`, `provenance`, `approval`, `scenario`, `workflow`, and `supervisor` CLI commands.
+- `dev` commands for a signed DevOps Blackbox project timeline.
 - GitHub Actions CI for formatting, linting, tests, build, and docs.
 - Release packaging emits SHA-256 provenance JSON and includes Windows launch/smoke helpers.
 

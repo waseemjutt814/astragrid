@@ -4,6 +4,7 @@ This is the completed build checklist for the current high-value phases.
 
 ## Current Quality Gate
 
+- [x] Add `dev init`, `dev record`, `dev run`, and `dev status` as the AstraGrid DevOps Blackbox product flow for real project work.
 - [x] Add a plain-language manual that explains AstraGrid, the flood preview, proofs, threats, and console numbers for non-engineering operators.
 - [x] Dashboard renders peer health, due work, stale retrying jobs, and recent peer errors.
 - [x] Dashboard export reports peer health fields in machine-readable CLI output.

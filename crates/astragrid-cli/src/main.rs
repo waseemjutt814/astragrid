@@ -121,12 +121,82 @@ enum SetupCommands {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DevEventKind {
+    Note,
+    BugFound,
+    FixStarted,
+    FixCompleted,
+    TestsPassed,
+    TestsFailed,
+    BuildCompleted,
+    ReleaseBuilt,
+    Decision,
+}
+
+#[derive(Debug, Subcommand)]
+enum DevCommands {
+    /// Create a ready DevOps Blackbox workspace for one project.
+    Init {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        root: Option<PathBuf>,
+        #[arg(long)]
+        mission: Option<String>,
+        #[arg(long, default_value = "lead")]
+        operator_name: String,
+        #[arg(long, default_value = "local-command")]
+        authority: String,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+    /// Record a signed project event into the DevOps Blackbox.
+    Record {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long, value_enum, default_value = "note")]
+        kind: DevEventKind,
+        #[arg(long)]
+        summary: String,
+        #[arg(long)]
+        detail: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        artifact: Vec<PathBuf>,
+    },
+    /// Run a local command and record its exit status, duration, and output hashes.
+    Run {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        detail: Option<String>,
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Print a compact DevOps Blackbox status summary.
+    Status {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Create and validate a ready-to-use local workspace.
     Setup {
         #[command(subcommand)]
         command: SetupCommands,
+    },
+    /// Track project work as signed, verified DevOps records.
+    Dev {
+        #[command(subcommand)]
+        command: DevCommands,
     },
     /// Create a new mission ledger with a system genesis event.
     Init {
@@ -1850,6 +1920,50 @@ fn main() -> Result<()> {
                 backups_dir,
                 force,
             })?),
+        },
+        Commands::Dev { command } => match command {
+            DevCommands::Init {
+                project,
+                root,
+                mission,
+                operator_name,
+                authority,
+                force,
+            } => print_json(&run_dev_init(DevInitRequest {
+                project,
+                root,
+                mission,
+                operator_name,
+                authority,
+                force,
+            })?),
+            DevCommands::Record {
+                profile,
+                kind,
+                summary,
+                detail,
+                status,
+                artifact,
+            } => print_json(&record_dev_event(DevRecordRequest {
+                profile,
+                kind,
+                summary,
+                detail,
+                status,
+                artifacts: artifact,
+            })?),
+            DevCommands::Run {
+                profile,
+                name,
+                detail,
+                command,
+            } => print_json(&run_dev_command(DevRunRequest {
+                profile,
+                name,
+                detail,
+                command,
+            })?),
+            DevCommands::Status { profile, limit } => print_json(&dev_status(&profile, limit)?),
         },
         Commands::Init {
             ledger,
@@ -3779,6 +3893,41 @@ struct FirstRunRequest {
     force: bool,
 }
 
+struct DevInitRequest {
+    project: String,
+    root: Option<PathBuf>,
+    mission: Option<String>,
+    operator_name: String,
+    authority: String,
+    force: bool,
+}
+
+struct DevRecordRequest {
+    profile: PathBuf,
+    kind: DevEventKind,
+    summary: String,
+    detail: Option<String>,
+    status: Option<String>,
+    artifacts: Vec<PathBuf>,
+}
+
+struct DevRunRequest {
+    profile: PathBuf,
+    name: String,
+    detail: Option<String>,
+    command: Vec<String>,
+}
+
+struct DevWorkspace {
+    profile: PathBuf,
+    root: PathBuf,
+    ledger: PathBuf,
+    db: PathBuf,
+    identity: PathBuf,
+    passphrase_file: PathBuf,
+    registry: PathBuf,
+}
+
 struct DashboardServeRequest {
     ledger: PathBuf,
     bind: String,
@@ -5309,6 +5458,294 @@ fn run_profile_doctor(profile_path: &PathBuf) -> Result<Value> {
         "path_checks": checks,
         "workspace_doctor": doctor,
     }))
+}
+
+impl DevEventKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            DevEventKind::Note => "note",
+            DevEventKind::BugFound => "bug_found",
+            DevEventKind::FixStarted => "fix_started",
+            DevEventKind::FixCompleted => "fix_completed",
+            DevEventKind::TestsPassed => "tests_passed",
+            DevEventKind::TestsFailed => "tests_failed",
+            DevEventKind::BuildCompleted => "build_completed",
+            DevEventKind::ReleaseBuilt => "release_built",
+            DevEventKind::Decision => "decision",
+        }
+    }
+
+    fn priority(self) -> Priority {
+        match self {
+            DevEventKind::BugFound | DevEventKind::TestsFailed => Priority::Critical,
+            DevEventKind::FixStarted
+            | DevEventKind::BuildCompleted
+            | DevEventKind::ReleaseBuilt => Priority::Elevated,
+            DevEventKind::Note
+            | DevEventKind::FixCompleted
+            | DevEventKind::TestsPassed
+            | DevEventKind::Decision => Priority::Routine,
+        }
+    }
+}
+
+fn run_dev_init(request: DevInitRequest) -> Result<Value> {
+    let project_stem = sanitize_file_component(&request.project);
+    let root = request
+        .root
+        .unwrap_or_else(|| PathBuf::from("ops").join(format!("{project_stem}-devops")));
+    let mission = request
+        .mission
+        .unwrap_or_else(|| format!("{project_stem}-devops"));
+    let operator_stem = sanitize_file_component(&request.operator_name);
+    let setup = run_first_run_setup(FirstRunRequest {
+        root: root.clone(),
+        profile: PathBuf::from("astragrid.profile.json"),
+        mission,
+        operator_name: request.operator_name,
+        role: Role::IncidentCommander,
+        authority: request.authority,
+        ledger: PathBuf::from("data/mission.agl"),
+        db: PathBuf::from("data/mission.db"),
+        identity: PathBuf::from(format!("data/operators/{operator_stem}.agkey")),
+        passphrase_file: PathBuf::from(format!("data/operators/{operator_stem}.pass")),
+        registry: PathBuf::from("data/operators/operators.agregistry"),
+        approvals: PathBuf::from("data/approvals.agl"),
+        peer_queue: PathBuf::from("data/peer-sync.db"),
+        reports_dir: PathBuf::from("data/reports"),
+        backups_dir: PathBuf::from("data/backups"),
+        force: request.force,
+    })?;
+    let profile = root.join("astragrid.profile.json");
+    let token_path = root.join("data/operator-console.token");
+    if !token_path.exists() || request.force {
+        let mut bytes = [0_u8; 24];
+        OsRng.fill_bytes(&mut bytes);
+        write_text_file(&token_path, &format!("{}\n", hex::encode(bytes)))?;
+    }
+    Ok(json!({
+        "project": request.project,
+        "root": root,
+        "profile": profile,
+        "console_token_file": token_path,
+        "console_command": format!("astragrid ui serve --profile {} --auth-token-file {}", profile.display(), token_path.display()),
+        "setup": setup,
+    }))
+}
+
+fn load_dev_workspace(profile_path: &PathBuf) -> Result<DevWorkspace> {
+    let profile = load_workspace_profile(profile_path)?;
+    let root = profile_root(profile_path, &profile)?;
+    Ok(DevWorkspace {
+        profile: profile_path.clone(),
+        ledger: resolve_workspace_path(&root, &profile.ledger),
+        db: resolve_workspace_path(&root, &profile.db),
+        identity: resolve_workspace_path(&root, &profile.primary_identity),
+        passphrase_file: resolve_workspace_path(&root, &profile.primary_passphrase_file),
+        registry: resolve_workspace_path(&root, &profile.registry),
+        root,
+    })
+}
+
+fn record_dev_event(request: DevRecordRequest) -> Result<Value> {
+    let artifacts = collect_dev_artifacts(&request.artifacts)?;
+    let payload = json!({
+        "schema": 1,
+        "source": "astragrid-devops-blackbox",
+        "kind": request.kind.as_str(),
+        "summary": request.summary,
+        "detail": request.detail,
+        "status": request.status,
+        "artifacts": artifacts,
+        "git": dev_git_snapshot(),
+    });
+    append_dev_payload(&request.profile, request.kind, payload)
+}
+
+fn run_dev_command(request: DevRunRequest) -> Result<Value> {
+    if request.command.is_empty() {
+        bail!("dev run requires a command after --");
+    }
+    let started = OffsetDateTime::now_utc();
+    let timer = Instant::now();
+    let output = ProcessCommand::new(&request.command[0])
+        .args(&request.command[1..])
+        .output();
+    let duration_ms = timer.elapsed().as_millis();
+    let (kind, status, command_report) = match output {
+        Ok(output) => {
+            let success = output.status.success();
+            let kind = infer_dev_run_kind(&request.name, success);
+            let status = if success { "passed" } else { "failed" };
+            (
+                kind,
+                status,
+                json!({
+                    "command": request.command,
+                    "exit_code": output.status.code(),
+                    "success": success,
+                    "duration_ms": duration_ms,
+                    "stdout_sha256": sha256_bytes_hex(&output.stdout),
+                    "stderr_sha256": sha256_bytes_hex(&output.stderr),
+                    "stdout_tail": utf8_tail(&output.stdout, 4000),
+                    "stderr_tail": utf8_tail(&output.stderr, 4000),
+                }),
+            )
+        }
+        Err(error) => (
+            DevEventKind::TestsFailed,
+            "spawn_failed",
+            json!({
+                "command": request.command,
+                "success": false,
+                "duration_ms": duration_ms,
+                "error": error.to_string(),
+            }),
+        ),
+    };
+    let payload = json!({
+        "schema": 1,
+        "source": "astragrid-devops-blackbox",
+        "kind": kind.as_str(),
+        "summary": format!("{}: {}", request.name, status),
+        "detail": request.detail,
+        "status": status,
+        "started_at": started.to_string(),
+        "finished_at": OffsetDateTime::now_utc().to_string(),
+        "run": command_report,
+        "git": dev_git_snapshot(),
+    });
+    append_dev_payload(&request.profile, kind, payload)
+}
+
+fn dev_status(profile_path: &PathBuf, limit: usize) -> Result<Value> {
+    let workspace = load_dev_workspace(profile_path)?;
+    let ledger = MissionLedger::open(&workspace.ledger);
+    let verification = ledger.verify()?;
+    let events = ledger.load_events()?;
+    let recent = events
+        .iter()
+        .rev()
+        .take(limit)
+        .map(|event| {
+            json!({
+                "sequence": event.sequence,
+                "action": event.action,
+                "subject": event.subject,
+                "actor": event.actor,
+                "priority": event.priority,
+                "hash": event.hash,
+                "devops": event.payload.get("source").and_then(Value::as_str) == Some("astragrid-devops-blackbox"),
+                "summary": event.payload.get("summary"),
+                "kind": event.payload.get("kind"),
+                "status": event.payload.get("status"),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "profile": workspace.profile,
+        "root": workspace.root,
+        "ledger": workspace.ledger,
+        "verified": verification.valid,
+        "events": events.len(),
+        "last_hash": verification.last_hash,
+        "recent": recent,
+        "git": dev_git_snapshot(),
+    }))
+}
+
+fn append_dev_payload(profile_path: &PathBuf, kind: DevEventKind, payload: Value) -> Result<Value> {
+    let workspace = load_dev_workspace(profile_path)?;
+    let keypair = load_keypair(&workspace.identity, Some(&workspace.passphrase_file), None)?;
+    let registry = OperatorRegistry::load_from_file(&workspace.registry)?;
+    let summary = payload
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or(kind.as_str())
+        .to_owned();
+    let command = CommandRequest::new(
+        Actor::from(keypair.identity()),
+        Action::AnnotateSituation,
+        format!("devops:{}", kind.as_str()),
+        kind.priority(),
+        payload,
+    );
+    let ledger = MissionLedger::open(&workspace.ledger);
+    let event = ledger.append_signed_with_registry(keypair.sign_request(command)?, &registry)?;
+    let mut store = MissionStore::open(&workspace.db)?;
+    let ingest = store.ingest_ledger(&ledger)?;
+    Ok(json!({
+        "profile": workspace.profile,
+        "ledger": workspace.ledger,
+        "db": workspace.db,
+        "recorded": true,
+        "summary": summary,
+        "event": event,
+        "store_ingest": ingest,
+    }))
+}
+
+fn infer_dev_run_kind(name: &str, success: bool) -> DevEventKind {
+    if !success {
+        return DevEventKind::TestsFailed;
+    }
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("release") || lowered.contains("package") {
+        DevEventKind::ReleaseBuilt
+    } else if lowered.contains("build") {
+        DevEventKind::BuildCompleted
+    } else if lowered.contains("test") || lowered.contains("check") || lowered.contains("gate") {
+        DevEventKind::TestsPassed
+    } else {
+        DevEventKind::Note
+    }
+}
+
+fn collect_dev_artifacts(paths: &[PathBuf]) -> Result<Vec<Value>> {
+    paths
+        .iter()
+        .map(|path| {
+            if !path.exists() {
+                bail!("artifact does not exist: {}", path.display());
+            }
+            Ok(json!({
+                "path": path,
+                "sha256": sha256_file_hex(path)?,
+                "bytes": fs::metadata(path)?.len(),
+            }))
+        })
+        .collect()
+}
+
+fn dev_git_snapshot() -> Value {
+    let root = command_stdout("git", &["rev-parse", "--show-toplevel"]);
+    let head = command_stdout("git", &["rev-parse", "--verify", "HEAD"]);
+    let branch = command_stdout("git", &["branch", "--show-current"]);
+    let status = command_stdout("git", &["status", "--short"]);
+    json!({
+        "available": root.is_some(),
+        "root": root,
+        "head": head,
+        "branch": branch,
+        "dirty": status.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        "status_short": status,
+    })
+}
+
+fn command_stdout(command: &str, args: &[&str]) -> Option<String> {
+    let output = ProcessCommand::new(command).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn utf8_tail(bytes: &[u8], max_chars: usize) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let chars = text.chars().collect::<Vec<_>>();
+    let start = chars.len().saturating_sub(max_chars);
+    chars[start..].iter().collect()
 }
 
 fn write_workspace_backup(request: BackupRequest) -> Result<Value> {
@@ -8168,28 +8605,28 @@ mod tests {
     use tempfile::{NamedTempFile, tempdir};
 
     use super::{
-        ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands,
-        DevicePairingRequest, DoctorCommands, FederationDaemonRequest, FirstRunRequest,
-        GeoCommands, IdentityCommands, NetCommands, OpsBundleRequest, OpsCommands,
-        PeerQueueCommands, PeerQueueWorkerRequest, PolicyPackCommands, ProvenanceCommands,
-        ReadinessGateRequest, RecommendCommands, RegistryQuorumChangeKind,
-        RegistryQuorumProposalRequest, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
-        RestoreRequest, RotateOperatorRequest, SetupCommands, SyncCommands, TeamAppendRequest,
-        TeamSessionIssueRequest, UiCommands, VaultAppendRequest, VaultCommands,
-        WorkerWatchdogRequest, WorkspaceProfile, acceptance_scenario,
+        ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands, DevCommands,
+        DevEventKind, DevInitRequest, DevRecordRequest, DevicePairingRequest, DoctorCommands,
+        FederationDaemonRequest, FirstRunRequest, GeoCommands, IdentityCommands, NetCommands,
+        OpsBundleRequest, OpsCommands, PeerQueueCommands, PeerQueueWorkerRequest,
+        PolicyPackCommands, ProvenanceCommands, ReadinessGateRequest, RecommendCommands,
+        RegistryQuorumChangeKind, RegistryQuorumProposalRequest, ReleaseCustodyPackRequest,
+        ReleaseEvidencePackRequest, RestoreRequest, RotateOperatorRequest, SetupCommands,
+        SyncCommands, TeamAppendRequest, TeamSessionIssueRequest, UiCommands, VaultAppendRequest,
+        VaultCommands, WorkerWatchdogRequest, WorkspaceProfile, acceptance_scenario,
         apply_registry_quorum_proposal, authorize_team_action, build_registry_trust_bundle,
         create_device_pairing, create_registry_quorum_proposal, default_signature_output_path,
-        evaluate_policy_pack_file, export_ops_bundle, http_request_path, http_response,
+        dev_status, evaluate_policy_pack_file, export_ops_bundle, http_request_path, http_response,
         import_registry_trust_bundle, inject_meta_refresh, issue_team_session, read_json_file,
-        read_payload, render_acceptance_script, render_default_launcher,
+        read_payload, record_dev_event, render_acceptance_script, render_default_launcher,
         resolve_operator_console_auth_token, resolve_ui_serve_artifacts, restore_workspace_backup,
-        rotate_operator_key, run_artifact_retention, run_federation_daemon, run_first_run_setup,
-        run_peer_queue_worker, run_profile_doctor, run_readiness_gate, run_worker_watchdog,
-        sha256_file_hex, sign_registry_quorum_proposal, team_append_signed, vault_append,
-        vault_init, vault_tail, vault_verify, verify_device_pairing_file, verify_policy_pack_file,
-        verify_registry_quorum_proposal_file, verify_registry_trust_bundle,
-        verify_team_session_file, write_acceptance_pack, write_release_custody_pack,
-        write_release_evidence_pack, write_workspace_backup,
+        rotate_operator_key, run_artifact_retention, run_dev_init, run_federation_daemon,
+        run_first_run_setup, run_peer_queue_worker, run_profile_doctor, run_readiness_gate,
+        run_worker_watchdog, sha256_file_hex, sign_registry_quorum_proposal, team_append_signed,
+        vault_append, vault_init, vault_tail, vault_verify, verify_device_pairing_file,
+        verify_policy_pack_file, verify_registry_quorum_proposal_file,
+        verify_registry_trust_bundle, verify_team_session_file, write_acceptance_pack,
+        write_release_custody_pack, write_release_evidence_pack, write_workspace_backup,
     };
 
     fn save_test_key(
@@ -8549,6 +8986,61 @@ mod tests {
                 assert_eq!(mission, "field-ready");
                 assert_eq!(operator_name, "lead");
                 assert_eq!(role, astragrid_core::Role::IncidentCommander);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_dev_blackbox_commands() {
+        let init = Cli::try_parse_from([
+            "astragrid",
+            "dev",
+            "init",
+            "--project",
+            "waseembot",
+            "--root",
+            "ops/waseembot-devops",
+        ])
+        .unwrap();
+        match init.command.expect("command") {
+            Commands::Dev {
+                command: DevCommands::Init { project, root, .. },
+            } => {
+                assert_eq!(project, "waseembot");
+                assert_eq!(root, Some(PathBuf::from("ops/waseembot-devops")));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let record = Cli::try_parse_from([
+            "astragrid",
+            "dev",
+            "record",
+            "--profile",
+            "ops/waseembot-devops/astragrid.profile.json",
+            "--kind",
+            "tests-passed",
+            "--summary",
+            "workspace tests passed",
+        ])
+        .unwrap();
+        match record.command.expect("command") {
+            Commands::Dev {
+                command:
+                    DevCommands::Record {
+                        profile,
+                        kind,
+                        summary,
+                        ..
+                    },
+            } => {
+                assert_eq!(
+                    profile,
+                    PathBuf::from("ops/waseembot-devops/astragrid.profile.json")
+                );
+                assert_eq!(kind, DevEventKind::TestsPassed);
+                assert_eq!(summary, "workspace tests passed");
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10194,6 +10686,43 @@ mod tests {
             resolved.approvals,
             Some(fs::canonicalize(approvals).unwrap())
         );
+    }
+
+    #[test]
+    fn dev_blackbox_records_signed_project_events() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("waseembot-devops");
+        let result = run_dev_init(DevInitRequest {
+            project: "waseembot".to_owned(),
+            root: Some(root.clone()),
+            mission: None,
+            operator_name: "lead".to_owned(),
+            authority: "local-command".to_owned(),
+            force: false,
+        })
+        .unwrap();
+        let profile = root.join("astragrid.profile.json");
+        assert_eq!(result["project"], "waseembot");
+        assert!(profile.exists());
+        assert!(root.join("data/operator-console.token").exists());
+
+        let record = record_dev_event(DevRecordRequest {
+            profile: profile.clone(),
+            kind: DevEventKind::BugFound,
+            summary: "gateway test failed".to_owned(),
+            detail: Some("vitest reported a gateway timeout".to_owned()),
+            status: Some("open".to_owned()),
+            artifacts: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(record["recorded"], true);
+        assert_eq!(record["summary"], "gateway test failed");
+
+        let status = dev_status(&profile, 5).unwrap();
+        assert_eq!(status["verified"], true);
+        assert_eq!(status["events"], 2);
+        assert_eq!(status["recent"][0]["summary"], "gateway test failed");
+        assert_eq!(status["recent"][0]["kind"], "bug_found");
     }
 
     #[test]
