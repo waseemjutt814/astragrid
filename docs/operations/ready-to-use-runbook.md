@@ -91,7 +91,7 @@ Serve the read-only local console from verified workspace artifacts:
 ```powershell
 .\target\release\astragrid.exe store ingest --ledger ops\field\data\mission.agl --db ops\field\data\mission.db
 'operator-console-local-token' | Set-Content -Encoding UTF8 ops\field\data\operator-console.token
-.\target\release\astragrid.exe ui serve --ledger ops\field\data\mission.agl --db ops\field\data\mission.db --approvals ops\field\data\approvals.agl --auth-token-file ops\field\data\operator-console.token --bind 127.0.0.1:17882
+.\target\release\astragrid.exe ui serve --profile ops\field\astragrid.profile.json --auth-token-file ops\field\data\operator-console.token --bind 127.0.0.1:17882
 ```
 
 The server prints a token-bearing local URL. Smoke the API without a browser:
@@ -274,8 +274,9 @@ Delete only after reviewing the report:
   supplied.
 - AI runner failure: `recommend ai-run` writes no bundle when the runner exits unsuccessfully,
   times out, exceeds output limits, or cites unknown evidence.
-- Operator console failure: `ui serve` fails before binding when the ledger, store, approvals, peer
-  queue, or evidence inputs cannot be verified or loaded.
+- Operator console failure: `ui serve --profile` fails before binding when the profile root, ledger,
+  or store cannot be verified or loaded. Direct artifact overrides fail before response handling
+  when the overridden ledger, store, approvals, peer queue, or evidence inputs cannot be loaded.
 - Operator console unauthorized: browser/API requests without the matching token return `401`
   without exposing mission data.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.

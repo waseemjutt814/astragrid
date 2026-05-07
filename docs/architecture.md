@@ -343,7 +343,9 @@ verified dashboard document for each request, and routes the same in-memory docu
 `/console.html`, `/api/summary`, `/api/events`, `/api/approvals`, `/api/audit`, `/api/peer-health`,
 `/api/dashboard`, and `/healthz`. The browser app fetches those local endpoints with the same token
 and escapes API values before rendering tables. The console is read-only; writes still happen through
-the signed CLI workflows.
+the signed CLI workflows. Operators can start it with `--profile astragrid.profile.json` so the
+ledger, store, approvals queue, and peer queue defaults come from the first-run workspace profile;
+explicit CLI paths still override individual artifacts for recovery drills.
 
 ## Operator Handoff Bundle
 
@@ -359,8 +361,9 @@ operator without embedding local workstation paths.
 
 `ops acceptance-pack` writes a runnable PowerShell acceptance pack. The pack exercises identity
 creation, registry enrollment, signed append, evidence build, workflow draft, approval append,
-store ingest, dashboard export, operator console API smoke, ops bundle, scenario run, doctor, and
-optional package provenance verification through the same CLI used by operators.
+store ingest, dashboard export, profile-backed and artifact-backed operator console API smoke, ops
+bundle, scenario run, doctor, and optional package provenance verification through the same CLI used
+by operators.
 
 `ops release-evidence-pack` writes a compact handoff folder for signed release custody artifacts.
 It requires a healthy release doctor, writes the doctor report, emits `checksums.sha256`, and

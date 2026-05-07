@@ -498,6 +498,12 @@ cargo run -q -p astragrid -- policy-pack sign --pack "$root\data\field-safety.po
 cargo run -q -p astragrid -- policy-pack verify --pack "$root\data\field-safety.policy.json" --signature "$root\data\field-safety.policy.sig.json" --registry "$root\data\operators\operators.agregistry"
 cargo run -q -p astragrid -- vault init --ledger "$root\data\mission.vault.json" --passphrase-file "$root\data\operators\lead.pass" --mission flood-watch
 cargo run -q -p astragrid -- vault verify --ledger "$root\data\mission.vault.json" --passphrase-file "$root\data\operators\lead.pass"
+$readyToken = "ready-workspace-console-token"
+$readyToken | Set-Content -Encoding UTF8 "$root\data\operator-console.token"
+$readyUi = Start-Job -ScriptBlock { param($profile, $tokenFile) cargo run -q -p astragrid -- ui serve --profile $profile --bind 127.0.0.1:17883 --auth-token-file $tokenFile --refresh-seconds 0 --max-requests 1 } -ArgumentList "$root\astragrid.profile.json", "$root\data\operator-console.token"
+Start-Sleep -Seconds 2
+Invoke-RestMethod "http://127.0.0.1:17883/api/summary?token=$readyToken"
+Receive-Job $readyUi -Wait
 ```
 
 See `docs/operations/ready-to-use-runbook.md` for the complete operator workflow.

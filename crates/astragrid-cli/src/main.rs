@@ -1215,8 +1215,11 @@ enum DashboardCommands {
 enum UiCommands {
     /// Serve the API-backed operator console over loopback.
     Serve {
-        #[arg(long, default_value = "data/mission.agl")]
-        ledger: PathBuf,
+        /// Load ledger, store, approvals, and peer queue defaults from a workspace profile.
+        #[arg(long)]
+        profile: Option<PathBuf>,
+        #[arg(long)]
+        ledger: Option<PathBuf>,
         #[arg(long, default_value = "127.0.0.1:17882")]
         bind: String,
         #[arg(long, default_value = "AstraGrid Operator Console")]
@@ -3068,6 +3071,7 @@ fn main() -> Result<()> {
         },
         Commands::Ui { command } => match command {
             UiCommands::Serve {
+                profile,
                 ledger,
                 bind,
                 title,
@@ -3081,23 +3085,33 @@ fn main() -> Result<()> {
                 auth_token,
                 no_auth,
                 max_requests,
-            } => print_json(&serve_operator_console(UiServeRequest {
-                ledger,
-                bind,
-                title,
-                db,
-                approvals,
-                peer_queue,
-                evidence_bundle,
-                map_href,
-                refresh_seconds,
-                auth_token: resolve_operator_console_auth_token(
-                    no_auth,
-                    auth_token_file.as_ref(),
-                    auth_token.as_deref(),
-                )?,
-                max_requests,
-            })?),
+            } => {
+                let artifacts = resolve_ui_serve_artifacts(
+                    profile.as_ref(),
+                    ledger,
+                    db,
+                    approvals,
+                    peer_queue,
+                )?;
+                print_json(&serve_operator_console(UiServeRequest {
+                    profile,
+                    ledger: artifacts.ledger,
+                    bind,
+                    title,
+                    db: artifacts.db,
+                    approvals: artifacts.approvals,
+                    peer_queue: artifacts.peer_queue,
+                    evidence_bundle,
+                    map_href,
+                    refresh_seconds,
+                    auth_token: resolve_operator_console_auth_token(
+                        no_auth,
+                        auth_token_file.as_ref(),
+                        auth_token.as_deref(),
+                    )?,
+                    max_requests,
+                })?)
+            }
         },
         Commands::Ops { command } => match command {
             OpsCommands::Bundle {
@@ -3779,6 +3793,7 @@ struct DashboardServeRequest {
 }
 
 struct UiServeRequest {
+    profile: Option<PathBuf>,
     ledger: PathBuf,
     bind: String,
     title: String,
@@ -4714,6 +4729,80 @@ fn handle_dashboard_stream(request: &DashboardServeRequest, stream: &mut TcpStre
     Ok(())
 }
 
+struct ResolvedUiServeArtifacts {
+    ledger: PathBuf,
+    db: Option<PathBuf>,
+    approvals: Option<PathBuf>,
+    peer_queue: Option<PathBuf>,
+}
+
+fn resolve_ui_serve_artifacts(
+    profile_path: Option<&PathBuf>,
+    ledger: Option<PathBuf>,
+    db: Option<PathBuf>,
+    approvals: Option<PathBuf>,
+    peer_queue: Option<PathBuf>,
+) -> Result<ResolvedUiServeArtifacts> {
+    let Some(profile_path) = profile_path else {
+        return Ok(ResolvedUiServeArtifacts {
+            ledger: ledger.unwrap_or_else(|| PathBuf::from("data/mission.agl")),
+            db,
+            approvals,
+            peer_queue,
+        });
+    };
+
+    let profile = load_workspace_profile(profile_path)?;
+    let root = profile_root(profile_path, &profile)?;
+    Ok(ResolvedUiServeArtifacts {
+        ledger: match ledger {
+            Some(path) => path,
+            None => required_profile_file(&root, &profile.ledger, "ledger")?,
+        },
+        db: match db {
+            Some(path) => Some(path),
+            None => Some(required_profile_file(&root, &profile.db, "store database")?),
+        },
+        approvals: match approvals {
+            Some(path) => Some(path),
+            None => optional_profile_file(&root, &profile.approvals, "approvals queue")?,
+        },
+        peer_queue: match peer_queue {
+            Some(path) => Some(path),
+            None => optional_profile_file(&root, &profile.peer_queue, "peer queue")?,
+        },
+    })
+}
+
+fn required_profile_file(root: &Path, path: &Path, label: &str) -> Result<PathBuf> {
+    let resolved = resolve_workspace_path(root, path);
+    let canonical = safe_existing_workspace_path(root, &resolved)
+        .with_context(|| format!("profile {label} path is invalid: {}", resolved.display()))?;
+    if !canonical.is_file() {
+        bail!(
+            "profile {label} path is not a file: {}",
+            canonical.display()
+        );
+    }
+    Ok(canonical)
+}
+
+fn optional_profile_file(root: &Path, path: &Path, label: &str) -> Result<Option<PathBuf>> {
+    let resolved = resolve_workspace_path(root, path);
+    if !resolved.exists() {
+        return Ok(None);
+    }
+    let canonical = safe_existing_workspace_path(root, &resolved)
+        .with_context(|| format!("profile {label} path is invalid: {}", resolved.display()))?;
+    if !canonical.is_file() {
+        bail!(
+            "profile {label} path is not a file: {}",
+            canonical.display()
+        );
+    }
+    Ok(Some(canonical))
+}
+
 fn serve_operator_console(request: UiServeRequest) -> Result<Value> {
     let listener = TcpListener::bind(&request.bind)
         .with_context(|| format!("failed to bind operator console server to {}", request.bind))?;
@@ -4742,6 +4831,8 @@ fn serve_operator_console(request: UiServeRequest) -> Result<Value> {
     Ok(json!({
         "bind": local_addr.to_string(),
         "auth": if request.auth_token.is_some() { "token" } else { "disabled" },
+        "profile": request.profile.as_ref().map(|path| path.to_string_lossy().to_string()),
+        "ledger": request.ledger.to_string_lossy().to_string(),
         "requests": served,
     }))
 }
@@ -6129,6 +6220,8 @@ try {{
     $federationWindowsKit = Join-Path $Run 'federation-windows-kit'
     $federationPort = Get-Random -Minimum 20000 -Maximum 30000
     $federationBind = "127.0.0.1:$federationPort"
+    $profileConsolePort = Get-Random -Minimum 40001 -Maximum 50000
+    $profileConsoleBind = "127.0.0.1:$profileConsolePort"
     $operatorConsolePort = Get-Random -Minimum 30001 -Maximum 40000
     $operatorConsoleBind = "127.0.0.1:$operatorConsolePort"
     $operatorConsoleToken = 'acceptance-console-token'
@@ -6170,6 +6263,25 @@ if ($request.evidence.Count -lt 1) {{ exit 12 }}
 
     Invoke-AstraGrid setup first-run --root $firstRunRoot --profile astragrid.profile.json --mission flood-watch --operator-name lead --role incident_commander
     Invoke-AstraGrid doctor profile --profile $firstRunProfile
+    $profileConsoleServer = Start-Job -ScriptBlock {{
+        param($ProjectRoot, $Bind, $Profile, $TokenFile)
+        Set-Location $ProjectRoot
+        $profileConsoleOutput = cargo run -q -p astragrid -- ui serve --profile $Profile --bind $Bind --auth-token-file $TokenFile --max-requests 1 --refresh-seconds 0 2>&1
+        if ($LASTEXITCODE -ne 0) {{ throw "profile operator console exited with code $LASTEXITCODE`: $profileConsoleOutput" }}
+    }} -ArgumentList $ProjectRoot, $profileConsoleBind, $firstRunProfile, $operatorConsoleTokenFile
+    $profileConsoleDeadline = (Get-Date).AddSeconds(30)
+    while ($true) {{
+        try {{
+            $profileSummary = Invoke-RestMethod -Uri "http://$profileConsoleBind/api/summary?token=$operatorConsoleToken" -TimeoutSec 2
+            break
+        }} catch {{
+            if ((Get-Date) -gt $profileConsoleDeadline) {{ throw "profile operator console summary API did not respond: $($_.Exception.Message)" }}
+            Start-Sleep -Milliseconds 250
+        }}
+    }}
+    if ($profileSummary.healthy -ne $true) {{ throw 'profile operator console summary did not report healthy state' }}
+    if ($profileSummary.mission -ne 'flood-watch') {{ throw "profile operator console mission mismatch: $($profileSummary.mission)" }}
+    Receive-Job $profileConsoleServer -Wait -ErrorAction Stop
     Invoke-AstraGrid ops backup --profile $firstRunProfile --output $backup --passphrase-file $firstRunPass
     Invoke-AstraGrid ops restore --input $backup --output-dir $restoreRoot --passphrase-file $firstRunPass
     Invoke-AstraGrid doctor profile --profile (Join-Path $restoreRoot 'astragrid.profile.json')
@@ -8070,11 +8182,11 @@ mod tests {
         evaluate_policy_pack_file, export_ops_bundle, http_request_path, http_response,
         import_registry_trust_bundle, inject_meta_refresh, issue_team_session, read_json_file,
         read_payload, render_acceptance_script, render_default_launcher,
-        resolve_operator_console_auth_token, restore_workspace_backup, rotate_operator_key,
-        run_artifact_retention, run_federation_daemon, run_first_run_setup, run_peer_queue_worker,
-        run_profile_doctor, run_readiness_gate, run_worker_watchdog, sha256_file_hex,
-        sign_registry_quorum_proposal, team_append_signed, vault_append, vault_init, vault_tail,
-        vault_verify, verify_device_pairing_file, verify_policy_pack_file,
+        resolve_operator_console_auth_token, resolve_ui_serve_artifacts, restore_workspace_backup,
+        rotate_operator_key, run_artifact_retention, run_federation_daemon, run_first_run_setup,
+        run_peer_queue_worker, run_profile_doctor, run_readiness_gate, run_worker_watchdog,
+        sha256_file_hex, sign_registry_quorum_proposal, team_append_signed, vault_append,
+        vault_init, vault_tail, vault_verify, verify_device_pairing_file, verify_policy_pack_file,
         verify_registry_quorum_proposal_file, verify_registry_trust_bundle,
         verify_team_session_file, write_acceptance_pack, write_release_custody_pack,
         write_release_evidence_pack, write_workspace_backup,
@@ -9355,6 +9467,8 @@ mod tests {
             "astragrid",
             "ui",
             "serve",
+            "--profile",
+            "ops/field/astragrid.profile.json",
             "--ledger",
             "data/mission.agl",
             "--db",
@@ -9376,6 +9490,7 @@ mod tests {
             Commands::Ui {
                 command:
                     UiCommands::Serve {
+                        profile,
                         ledger,
                         db,
                         approvals,
@@ -9387,7 +9502,11 @@ mod tests {
                         ..
                     },
             } => {
-                assert_eq!(ledger, PathBuf::from("data/mission.agl"));
+                assert_eq!(
+                    profile,
+                    Some(PathBuf::from("ops/field/astragrid.profile.json"))
+                );
+                assert_eq!(ledger, Some(PathBuf::from("data/mission.agl")));
                 assert_eq!(db, Some(PathBuf::from("data/mission.db")));
                 assert_eq!(approvals, Some(PathBuf::from("data/approvals.agl")));
                 assert_eq!(bind, "127.0.0.1:18082");
@@ -10030,6 +10149,51 @@ mod tests {
         assert_eq!(loaded.mission, "field-ready");
         let doctor = run_profile_doctor(&profile).unwrap();
         assert!(doctor["healthy"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn ui_serve_resolves_artifacts_from_workspace_profile() {
+        let dir = tempdir().unwrap();
+        let profile = dir.path().join("astragrid.profile.json");
+        run_first_run_setup(FirstRunRequest {
+            root: dir.path().to_path_buf(),
+            profile: PathBuf::from("astragrid.profile.json"),
+            mission: "field-ready".to_owned(),
+            operator_name: "lead".to_owned(),
+            role: astragrid_core::Role::IncidentCommander,
+            authority: "local-command".to_owned(),
+            ledger: PathBuf::from("data/mission.agl"),
+            db: PathBuf::from("data/mission.db"),
+            identity: PathBuf::from("data/operators/lead.agkey"),
+            passphrase_file: PathBuf::from("data/operators/lead.pass"),
+            registry: PathBuf::from("data/operators/operators.agregistry"),
+            approvals: PathBuf::from("data/approvals.agl"),
+            peer_queue: PathBuf::from("data/peer-sync.db"),
+            reports_dir: PathBuf::from("data/reports"),
+            backups_dir: PathBuf::from("data/backups"),
+            force: false,
+        })
+        .unwrap();
+
+        let resolved = resolve_ui_serve_artifacts(Some(&profile), None, None, None, None).unwrap();
+        assert_eq!(
+            resolved.ledger,
+            fs::canonicalize(dir.path().join("data/mission.agl")).unwrap()
+        );
+        assert_eq!(
+            resolved.db,
+            Some(fs::canonicalize(dir.path().join("data/mission.db")).unwrap())
+        );
+        assert_eq!(resolved.approvals, None);
+        assert_eq!(resolved.peer_queue, None);
+
+        let approvals = dir.path().join("data/approvals.agl");
+        fs::write(&approvals, b"approval-log\n").unwrap();
+        let resolved = resolve_ui_serve_artifacts(Some(&profile), None, None, None, None).unwrap();
+        assert_eq!(
+            resolved.approvals,
+            Some(fs::canonicalize(approvals).unwrap())
+        );
     }
 
     #[test]
