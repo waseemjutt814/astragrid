@@ -343,9 +343,10 @@ verified dashboard document for each request, and routes the same in-memory docu
 `/console.html`, `/api/summary`, `/api/events`, `/api/approvals`, `/api/audit`, `/api/peer-health`,
 `/api/dashboard`, and `/healthz`. The browser app fetches those local endpoints with the same token
 and escapes API values before rendering tables. Refresh is manual by default; operators can enable a
-timed live refresh by passing `--refresh-seconds` and using the console toggle. The console is
-read-only; writes still happen through the signed CLI workflows. Operators can start it with
-`--profile astragrid.profile.json` so the
+timed live refresh by passing `--refresh-seconds` and using the console toggle. The overview renders
+a mission brief, latest activity, and attention rows with human-readable action labels while keeping
+short integrity proofs available for audit trails. The console is read-only; writes still happen
+through the signed CLI workflows. Operators can start it with `--profile astragrid.profile.json` so the
 ledger, store, approvals queue, and peer queue defaults come from the first-run workspace profile;
 explicit CLI paths still override individual artifacts for recovery drills.
 

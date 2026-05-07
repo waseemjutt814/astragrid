@@ -200,6 +200,16 @@ button {{ font:inherit }}
 .metric strong {{ display:block; font-size:25px; color:var(--ok) }}
 .metric span {{ color:var(--muted) }}
 .panel {{ padding:13px; min-width:0 }}
+.brief {{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:7px;
+  padding:13px 14px;
+  display:grid;
+  gap:6px;
+}}
+.brief strong {{ color:var(--brand); font-size:18px }}
+.brief span {{ color:var(--muted) }}
 .split {{ display:grid; grid-template-columns:minmax(0,1.1fr) minmax(360px,.9fr); gap:14px }}
 table {{ width:100%; border-collapse:collapse; table-layout:fixed }}
 th,td {{ padding:8px 9px; border-bottom:1px solid #e7ebf1; text-align:left; vertical-align:top }}
@@ -239,7 +249,6 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
   .shell {{ padding:10px }}
   .rail {{ grid-template-columns:1fr }}
   .metrics {{ grid-template-columns:1fr }}
-  th:nth-child(1),td:nth-child(1) {{ display:none }}
 }}
 </style>
 </head>
@@ -267,14 +276,18 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
   <div class="workspace">
     <section class="banner" id="health-banner"><div><strong id="health-title">Loading verified mission state</strong><span id="health-detail">Waiting for local API response.</span></div><a class="map-link" id="map-link" hidden>Map Console</a></section>
     <section class="metrics" aria-label="Mission metrics">
-      <div class="metric"><strong id="metric-events">0</strong><span>Ledger Events</span></div>
-      <div class="metric"><strong id="metric-open">0</strong><span>Open Incidents</span></div>
-      <div class="metric"><strong id="metric-approvals">0</strong><span>Pending Approvals</span></div>
-      <div class="metric"><strong id="metric-peer-due">0</strong><span>Peer Jobs Due</span></div>
-      <div class="metric"><strong id="metric-evidence">0</strong><span>Evidence Bundles</span></div>
+      <div class="metric"><strong id="metric-events">0</strong><span>Verified Records</span></div>
+      <div class="metric"><strong id="metric-open">0</strong><span>Active Incidents</span></div>
+      <div class="metric"><strong id="metric-approvals">0</strong><span>Decisions Waiting</span></div>
+      <div class="metric"><strong id="metric-peer-due">0</strong><span>Sync Jobs Due</span></div>
+      <div class="metric"><strong id="metric-evidence">0</strong><span>Evidence Packs</span></div>
     </section>
     <section class="tab-panel" id="tab-overview">
-      <h2>Operational Summary</h2>
+      <h2>Mission Brief</h2>
+      <div class="brief">
+        <strong id="mission-brief">Loading mission brief</strong>
+        <span id="latest-action">Waiting for latest activity.</span>
+      </div>
       <div class="split">
         <div>
           <table>
@@ -287,14 +300,14 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
       </div>
       <div class="overview-grid">
         <div class="panel">
-          <h2>Recent Mission Events</h2>
+          <h2>Recent Activity</h2>
           <table>
-            <thead><tr><th>Seq</th><th>Action</th><th>Subject</th><th>Priority</th></tr></thead>
+            <thead><tr><th>What happened</th><th>Subject</th><th>Operator</th><th>Importance</th></tr></thead>
             <tbody id="overview-event-rows"></tbody>
           </table>
         </div>
         <div class="panel">
-          <h2>Operator Attention</h2>
+          <h2>Needs Attention</h2>
           <table>
             <tbody id="overview-attention-rows"></tbody>
           </table>
@@ -304,14 +317,14 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
     <section class="tab-panel" id="tab-events" hidden>
       <h2>Mission Events</h2>
       <table>
-        <thead><tr><th>Seq</th><th>Action</th><th>Subject</th><th>Actor</th><th>Priority</th><th>Hash</th></tr></thead>
+        <thead><tr><th>Order</th><th>What happened</th><th>Subject</th><th>Operator</th><th>Importance</th><th>Proof</th></tr></thead>
         <tbody id="event-rows"></tbody>
       </table>
     </section>
     <section class="tab-panel" id="tab-approvals" hidden>
       <h2>Approvals</h2>
       <table>
-        <thead><tr><th>ID</th><th>Status</th><th>Submitted By</th><th>Reviewed By</th><th>Draft Hash</th></tr></thead>
+        <thead><tr><th>Decision</th><th>Status</th><th>Requested By</th><th>Reviewed By</th><th>Proof</th></tr></thead>
         <tbody id="approval-rows"></tbody>
       </table>
     </section>
@@ -327,7 +340,7 @@ code {{ font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12
       <div class="split">
         <div>
           <table>
-            <thead><tr><th>ID</th><th>Peer</th><th>Status</th><th>Attempts</th><th>Next Attempt</th></tr></thead>
+            <thead><tr><th>Peer</th><th>Status</th><th>Attempts</th><th>Due</th><th>Job</th></tr></thead>
             <tbody id="peer-rows"></tbody>
           </table>
         </div>
@@ -381,9 +394,49 @@ const peerHealthLabel = (value) => {{
 }};
 const peerHealthDetail = (summary) => {{
   if (summary.peer_health_status === "not_configured") {{
-    return `local workspace | last hash: ${{summary.last_hash || "--"}}`;
+    return `local workspace | integrity proof: ${{shortProof(summary.last_hash)}}`;
   }}
-  return `peer health: ${{peerHealthLabel(summary.peer_health_status)}} | last hash: ${{summary.last_hash || "--"}}`;
+  return `sync health: ${{peerHealthLabel(summary.peer_health_status)}} | integrity proof: ${{shortProof(summary.last_hash)}}`;
+}};
+const actionLabels = {{
+  open_mission: "Mission opened",
+  declare_incident: "Incident declared",
+  close_incident: "Incident closed",
+  dispatch_team: "Team dispatched",
+  record_observation: "Observation recorded",
+  annotate_situation: "Situation note",
+}};
+const priorityLabels = {{
+  critical: "Critical",
+  elevated: "Elevated",
+  routine: "Routine",
+}};
+const titleCase = (value) => String(value || "--").replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
+const humanAction = (value) => actionLabels[value] || titleCase(value);
+const humanPriority = (value) => priorityLabels[value] || titleCase(value);
+const humanActor = (actor) => actor?.name ? `${{actor.name}} (${{
+  titleCase(actor.role)
+}})` : "--";
+const shortProof = (value) => {{
+  const text = String(value || "--");
+  return text.length > 20 ? `${{text.slice(0, 10)}}...${{text.slice(-6)}}` : text;
+}};
+const plural = (count, singular, pluralLabel) => `${{count}} ${{count === 1 ? singular : pluralLabel}}`;
+const recentEvents = (events) => events.slice(-5).reverse();
+const missionBriefText = (summary) => [
+  plural(summary.open_incidents, "active incident", "active incidents"),
+  plural(summary.pending_approvals, "decision waiting", "decisions waiting"),
+  plural(summary.peer_due, "sync job due", "sync jobs due"),
+  plural(summary.evidence_bundles, "evidence pack", "evidence packs"),
+].join(" | ");
+const latestEventText = (events) => {{
+  if (events.length === 0) return "No mission activity loaded.";
+  const event = events[events.length - 1];
+  return `Latest activity: ${{humanAction(event.action)}} for ${{event.subject || "mission"}} by ${{humanActor(event.actor)}}.`;
+}};
+const approvalDecision = (item) => {{
+  const request = item.draft?.request;
+  return request ? `${{humanAction(request.action)}}: ${{request.subject || "mission"}}` : item.id;
 }};
 
 function tableRows(id, rows, count, render, emptyLabel) {{
@@ -419,36 +472,42 @@ function renderSummary(summary) {{
     ["Annotations", summary.annotations],
     ["Store events", summary.store_events ?? "--"],
     ["Sync mode", peerHealthLabel(summary.peer_health_status)],
-    ["Peer jobs", summary.peer_jobs],
-    ["Audit items", summary.audit_items],
+    ["Peer jobs due now", summary.peer_due],
+    ["Evidence packs", summary.evidence_bundles],
+    ["Audit timeline entries", summary.audit_items],
   ].map(([label, value]) => cells([label, value])).join("");
-  setText("status-line", `local API healthy: ${{summary.healthy}} | refresh: ${{liveRefresh.checked && refreshMs > 0 ? `${{refreshMs / 1000}}s live` : "manual"}}`);
+  setText("status-line", `${{summary.healthy ? "Verified" : "Needs attention"}} | ${{liveRefresh.checked && refreshMs > 0 ? `${{refreshMs / 1000}}s live refresh` : "manual refresh"}} | proof ${{shortProof(summary.last_hash)}}`);
+}}
+
+function renderBrief(summary, events) {{
+  setText("mission-brief", missionBriefText(summary));
+  setText("latest-action", latestEventText(events));
 }}
 
 function renderEvents(events) {{
   tableRows("event-rows", events, 6, (event) => cells([
-    event.sequence,
-    pill(event.action),
+    `#${{event.sequence}}`,
+    pill(humanAction(event.action)),
     event.subject,
-    `${{event.actor?.name || "--"}} (${{event.actor?.role || "--"}})`,
-    pill(event.priority),
-    code(event.hash),
+    humanActor(event.actor),
+    pill(humanPriority(event.priority)),
+    code(shortProof(event.hash)),
   ]), "No mission events in the current dashboard window.");
-  tableRows("overview-event-rows", events.slice(0, 5), 4, (event) => cells([
-    event.sequence,
-    pill(event.action),
+  tableRows("overview-event-rows", recentEvents(events), 4, (event) => cells([
+    pill(humanAction(event.action)),
     event.subject,
-    pill(event.priority),
+    humanActor(event.actor),
+    pill(humanPriority(event.priority)),
   ]), "No recent mission events loaded.");
 }}
 
 function renderApprovals(approvals) {{
   tableRows("approval-rows", approvals, 5, (item) => cells([
-    code(item.id),
+    approvalDecision(item),
     pill(item.status),
     item.submitted_by,
     item.reviewed_by || "--",
-    code(item.draft_hash),
+    code(shortProof(item.draft_hash)),
   ]), "No approval records loaded.");
 }}
 
@@ -466,11 +525,11 @@ function renderAudit(items) {{
 function renderPeers(payload) {{
   const jobs = payload.jobs || [];
   tableRows("peer-rows", jobs, 5, (job) => cells([
-    code(job.id),
     `${{job.peer?.name || "--"}} ${{job.peer?.addr ? `(${{job.peer.addr}})` : ""}}`,
     pill(job.status),
     `${{job.attempts}}/${{job.max_attempts}}`,
     job.next_attempt_at,
+    code(shortProof(job.id)),
   ]), "Local-only workspace: no peer sync jobs are attached.");
   const summary = payload.queue || {{}};
   const health = payload.health || {{}};
@@ -489,14 +548,15 @@ function renderPeers(payload) {{
 function renderAttention(summary, approvals, peers) {{
   const pending = approvals.filter((item) => item.status === "pending");
   const failedPeers = (peers.jobs || []).filter((job) => job.status === "failed" || job.status === "retrying");
-  const rows = [
-    ["Open incidents", summary.open_incidents > 0 ? pill(summary.open_incidents) : "0"],
-    ["Pending approvals", pending.length > 0 ? pill(pending.length) : "0"],
-    ["Peer sync", peerHealthLabel(summary.peer_health_status)],
-    ["Peer jobs needing attention", failedPeers.length > 0 ? pill(failedPeers.length) : "0"],
-    ["Evidence bundles", summary.evidence_bundles],
-  ];
-  document.getElementById("overview-attention-rows").innerHTML = rows.map(([label, value]) => cells([label, value])).join("");
+  const rows = [];
+  if (summary.open_incidents > 0) rows.push(["Incident response", pill(plural(summary.open_incidents, "active incident", "active incidents"))]);
+  if (pending.length > 0) rows.push(["Approval queue", pill(plural(pending.length, "decision waiting", "decisions waiting"))]);
+  if (summary.peer_due > 0) rows.push(["Peer sync", pill(plural(summary.peer_due, "job due now", "jobs due now"))]);
+  if (failedPeers.length > 0) rows.push(["Sync risk", pill(plural(failedPeers.length, "job retrying or failed", "jobs retrying or failed"))]);
+  if (summary.evidence_bundles > 0) rows.push(["Evidence", plural(summary.evidence_bundles, "pack attached", "packs attached")]);
+  document.getElementById("overview-attention-rows").innerHTML = rows.length === 0
+    ? emptyRow(2, "No immediate operator attention items.")
+    : rows.map(([label, value]) => cells([label, value])).join("");
 }}
 
 async function loadConsole() {{
@@ -507,6 +567,7 @@ async function loadConsole() {{
     api("/api/audit"),
     api("/api/peer-health"),
   ]);
+  renderBrief(summary, events);
   renderSummary(summary);
   renderEvents(events);
   renderApprovals(approvals);
