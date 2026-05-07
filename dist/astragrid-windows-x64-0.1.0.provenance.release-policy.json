@@ -5,10 +5,10 @@
   "target": "windows-x64",
   "min_distinct_valid_signers": 1,
   "required_signer_ids": [
-    "agop_1a332519c3ad47a41076ebbc"
+    "agop_e740b2dc8a06e2eb1c102d5c"
   ],
   "allowed_signer_ids": [
-    "agop_1a332519c3ad47a41076ebbc"
+    "agop_e740b2dc8a06e2eb1c102d5c"
   ],
   "require_clean_git": true
 }

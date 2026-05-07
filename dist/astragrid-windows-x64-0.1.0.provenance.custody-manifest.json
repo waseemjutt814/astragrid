@@ -1,6 +1,6 @@
 {
   "doctor_status": "healthy",
-  "generated_at": "2026-05-07 19:39:18.4674597 +00:00:00",
+  "generated_at": "2026-05-07 19:50:12.7543191 +00:00:00",
   "policy": "astragrid-windows-x64-0.1.0.provenance.release-policy.json",
   "provenance": "astragrid-windows-x64-0.1.0.provenance.json",
   "quorum": "astragrid-windows-x64-0.1.0.provenance.quorum.json",
@@ -9,7 +9,7 @@
     "astragrid-windows-x64-0.1.0.provenance.sig.json"
   ],
   "signer_ids": [
-    "agop_1a332519c3ad47a41076ebbc"
+    "agop_e740b2dc8a06e2eb1c102d5c"
   ],
   "threshold": 1
 }

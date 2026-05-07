@@ -5,20 +5,20 @@
     {
       "schema": 1,
       "provenance_path": "astragrid-windows-x64-0.1.0.provenance.json",
-      "provenance_sha256": "4391de351e95680ded33f44705d63b975a1835fc08452f12de614ba46fed0267",
+      "provenance_sha256": "a82a7449ec211051146c8eed48a7a936ca7eb00e6cee0ada37b36c03701d4f24",
       "signature": {
         "schema": 1,
         "identity": {
-          "id": "agop_1a332519c3ad47a41076ebbc",
+          "id": "agop_e740b2dc8a06e2eb1c102d5c",
           "name": "release-custody",
           "role": "operator",
-          "public_key": "4dd7290e22b514eef2a9678d08ebc96e3bf36497aff78520fe06dfacd6d74924"
+          "public_key": "3b402e10acdcd7ec291bcef8166235f7695f0ee8f1da0ae0de041be81984aca9"
         },
-        "signed_at": "2026-05-07T19:39:18.220347Z",
+        "signed_at": "2026-05-07T19:50:12.4628881Z",
         "purpose": "astragrid-release-provenance-v1",
         "digest_algorithm": "sha256",
-        "payload_digest": "4391de351e95680ded33f44705d63b975a1835fc08452f12de614ba46fed0267",
-        "signature": "af9bb6ee2f38f8497ac7d4bafde72cd6bf91950d645a4a401f54d855d60d1fc25900f200f5b22a6c70e3419c71dbe95c5d6080b6e4ed4321f077ad1132ca480b"
+        "payload_digest": "a82a7449ec211051146c8eed48a7a936ca7eb00e6cee0ada37b36c03701d4f24",
+        "signature": "b887df7ee4746b0577ec2d20c86f51deaa1728a6e13b27873691ff32965d8588fbcce8e00da6bc255028d19741e9549c57e0529af9e1c6f83627cc4938456003"
       }
     }
   ]
