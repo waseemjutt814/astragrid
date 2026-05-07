@@ -143,6 +143,17 @@ Use the vault path when the primary at-rest ledger artifact must stay encrypted:
 .\target\release\astragrid.exe vault verify --ledger ops\field\data\mission.vault.json --passphrase-file ops\field\data\operators\lead.pass
 ```
 
+## Worker Watchdog
+
+Wrap local long-running workers with a capped restart watchdog when you need a recovery audit:
+
+```powershell
+.\target\release\astragrid.exe supervisor watchdog-run --name peer-worker --command .\target\release\astragrid.exe --arg peer-queue --arg worker --arg --queue --arg ops\field\data\peer-sync.db --arg --ledger --arg ops\field\data\mission.agl --arg --shared-key-file --arg ops\field\data\peer.key --arg --cycles --arg 1 --audit-log ops\field\data\watchdog.jsonl --max-restarts 3 --restart-delay-ms 1000
+```
+
+The watchdog writes one JSON object per line for every attempt, restart, recovery, or final
+failure. It exits with failure when the restart budget is exhausted.
+
 ## Update And Release Evidence
 
 ```powershell
@@ -178,5 +189,7 @@ Delete only after reviewing the report:
   policy-enforced append paths fail before ledger mutation.
 - Stale or under-approved registry proposal: `identity quorum-verify` and `identity quorum-apply`
   fail before an operator is enrolled or revoked.
+- Exhausted worker recovery: `supervisor watchdog-run` exits failed and leaves the attempt history
+  in the JSONL audit log.
 - Broken provenance: `provenance verify` and `doctor release` fail before handoff.
 - Existing restore files: restore stops unless `--overwrite` is supplied.

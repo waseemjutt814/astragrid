@@ -112,3 +112,11 @@ This is the completed build checklist for the current high-value phases.
 - [x] Add quorum verification that rejects stale registries, duplicate signers, revoked signers, wrong-role signers, and invalid signatures.
 - [x] Add fail-closed apply so registry mutation happens only after verified distinct incident-commander approvals.
 - [x] Extend acceptance coverage and docs for quorum-governed operator enrollment.
+
+## Next Wave: Worker Watchdog Recovery
+
+- [x] Add `supervisor watchdog-run` for real local child-process supervision without shell interpolation.
+- [x] Add JSONL audit events for watchdog start, attempt start/exit, restart scheduling, recovery, and final failure.
+- [x] Add capped restart enforcement with nonzero exit recovery and fail-closed exhausted-budget reporting.
+- [x] Add parser and executable tests for watchdog recovery and failure paths.
+- [x] Extend acceptance coverage and docs for live worker recovery.

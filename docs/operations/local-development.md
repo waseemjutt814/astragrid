@@ -209,6 +209,24 @@ cargo run -q -p astragrid -- supervisor windows-peer-worker-kit --output-dir .ca
 cargo run -q -p astragrid -- supervisor systemd-peer-worker-kit --output-dir .cache\worker-kit-systemd --binary /usr/local/bin/astragrid --working-directory /srv/astragrid --ledger data/mission.agl --queue data/peer-sync.db --shared-key-file secrets/peer.key --user astragrid
 ```
 
+Exercise live worker recovery with a fail-once local worker:
+
+```powershell
+$watchdogScript = ".cache\watchdog-worker-$id.ps1"
+$watchdogState = ".cache\watchdog-worker-$id.state"
+$watchdogAudit = ".cache\watchdog-audit-$id.jsonl"
+@'
+param([string]$State)
+if (-not (Test-Path $State)) {
+    'first failure' | Set-Content -Encoding UTF8 $State
+    exit 7
+}
+exit 0
+'@ | Set-Content -Encoding UTF8 $watchdogScript
+cargo run -q -p astragrid -- supervisor watchdog-run --name local-peer-worker --command powershell --arg -NoProfile --arg -ExecutionPolicy --arg Bypass --arg -File --arg $watchdogScript --arg $watchdogState --audit-log $watchdogAudit --max-restarts 2 --restart-delay-ms 0
+Get-Content $watchdogAudit
+```
+
 ## Source Profile Smoke Test
 
 ```powershell

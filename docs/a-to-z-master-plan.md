@@ -38,6 +38,9 @@ gated until those inputs exist.
 - **Quorum registry changes:** `identity quorum-propose`, `identity quorum-sign`, `identity
   quorum-verify`, and `identity quorum-apply` bind operator enroll/revoke changes to the current
   registry digest and require distinct active incident-commander approvals before mutation.
+- **Worker watchdog recovery:** `supervisor watchdog-run` starts a real child process, writes JSONL
+  audit records, restarts failed workers within a capped budget, reports recovery, and fails closed
+  when the worker never reaches the expected exit code.
 
 ## A-to-Z Delivery Gates
 
@@ -65,14 +68,14 @@ gated until those inputs exist.
 | T | Team roles and permissions | Complete for the team-authenticated signed append path: sessions verify registry status and policy before mutation. Broader service/API command enforcement remains gated on the long-running service boundary. |
 | U | `astragrid-ai` evidence-bound runner crate | Deterministic and structured recommendation paths exist; runner crate needs sandboxed execution and citation enforcement. |
 | V | Visual dashboard app | Dashboard HTML exists; native/web app waits for storage budget and real runtime choice. |
-| W | Worker watchdog with live service recovery | Supervisor artifacts exist; watchdog needs process health policy and recovery tests. |
+| W | Worker watchdog with live service recovery | Complete for local process recovery: `supervisor watchdog-run` spawns the configured worker without shell interpolation, audits each attempt, restarts within a capped budget, reports recovered/failed state, and has executable restart/failure tests. OS service manager health integration remains deployment work. |
 | X | Cross-platform release matrix | CI covers Windows/Linux/macOS; release packages need platform-specific artifact creation. |
 | Y | Field deployment runbooks | Local ready-to-use runbook exists for install, first-run setup, backup, restore, rotation, vault use, update checks, and failure handling. Real site-specific drills remain gated. |
 | Z | Disk cleanup and artifact retention | Current wave adds CLI retention reporting/deletion and package smoke cleanup behavior. |
 
 ## Next No-Fake Order
 
-1. Add federation daemon service hardening and worker watchdog recovery.
+1. Add federation daemon service hardening.
 2. Add service-bound team sessions once the long-running API boundary exists.
 3. Add platform package expansion only when signing/notary/release-channel credentials exist.
 4. Add hardware keys, remote CA, notarization, and update channels only when real credentials or real

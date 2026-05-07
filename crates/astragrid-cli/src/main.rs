@@ -4,7 +4,8 @@ use std::{
     io::{self, IsTerminal, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    time::Duration as StdDuration,
+    process::Command as ProcessCommand,
+    time::{Duration as StdDuration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -1505,6 +1506,25 @@ enum SupervisorCommands {
         task_name: String,
         #[command(flatten)]
         spec: PeerWorkerSupervisorArgs,
+    },
+    /// Run a local worker under a finite restart watchdog with JSONL audit.
+    WatchdogRun {
+        #[arg(long, default_value = "astragrid-worker")]
+        name: String,
+        #[arg(long)]
+        command: String,
+        #[arg(long = "arg", allow_hyphen_values = true)]
+        args: Vec<String>,
+        #[arg(long)]
+        working_directory: Option<PathBuf>,
+        #[arg(long)]
+        audit_log: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        max_restarts: u32,
+        #[arg(long, default_value_t = 1_000)]
+        restart_delay_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        success_exit_code: i32,
     },
 }
 
@@ -3216,6 +3236,32 @@ fn main() -> Result<()> {
                     "kind": "windows-peer-worker-kit",
                 }))
             }
+            SupervisorCommands::WatchdogRun {
+                name,
+                command,
+                args,
+                working_directory,
+                audit_log,
+                max_restarts,
+                restart_delay_ms,
+                success_exit_code,
+            } => {
+                let report = run_worker_watchdog(WorkerWatchdogRequest {
+                    name,
+                    command,
+                    args,
+                    working_directory,
+                    audit_log,
+                    max_restarts,
+                    restart_delay_ms,
+                    success_exit_code,
+                })?;
+                print_json(&report)?;
+                if !report.healthy {
+                    bail!("worker watchdog exhausted restart budget");
+                }
+                Ok(())
+            }
         },
     }
 }
@@ -3388,6 +3434,42 @@ struct ArtifactRetentionRequest {
     keep_dist_releases: usize,
     include_target_cache: bool,
     delete: bool,
+}
+
+struct WorkerWatchdogRequest {
+    name: String,
+    command: String,
+    args: Vec<String>,
+    working_directory: Option<PathBuf>,
+    audit_log: PathBuf,
+    max_restarts: u32,
+    restart_delay_ms: u64,
+    success_exit_code: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct WorkerWatchdogReport {
+    healthy: bool,
+    status: String,
+    name: String,
+    command: String,
+    args_count: usize,
+    working_directory: Option<PathBuf>,
+    audit_log: PathBuf,
+    attempts: Vec<WorkerWatchdogAttempt>,
+    restarts: u32,
+    max_restarts: u32,
+    recovered: bool,
+    final_exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct WorkerWatchdogAttempt {
+    attempt: u32,
+    exit_code: Option<i32>,
+    success: bool,
+    runtime_ms: u64,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -3572,6 +3654,195 @@ struct DevicePairingVerification {
     operator: OperatorIdentity,
     expired: bool,
     checks: Vec<Value>,
+}
+
+fn run_worker_watchdog(request: WorkerWatchdogRequest) -> Result<WorkerWatchdogReport> {
+    validate_watchdog_value("name", &request.name)?;
+    validate_watchdog_value("command", &request.command)?;
+    for arg in &request.args {
+        validate_watchdog_value("arg", arg)?;
+    }
+    if let Some(working_directory) = &request.working_directory
+        && !working_directory.is_dir()
+    {
+        bail!(
+            "watchdog working directory does not exist or is not a directory: {}",
+            working_directory.display()
+        );
+    }
+    if let Some(parent) = request.audit_log.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    let max_attempts = request
+        .max_restarts
+        .checked_add(1)
+        .context("watchdog restart budget overflowed")?;
+    let mut attempts = Vec::new();
+    let mut restarts = 0_u32;
+    let mut final_exit_code = None;
+
+    write_watchdog_audit(
+        &request.audit_log,
+        json!({
+            "event": "watchdog_started",
+            "timestamp": OffsetDateTime::now_utc().to_string(),
+            "name": &request.name,
+            "command": &request.command,
+            "args_count": request.args.len(),
+            "max_restarts": request.max_restarts,
+            "success_exit_code": request.success_exit_code,
+        }),
+    )?;
+
+    for attempt in 1..=max_attempts {
+        write_watchdog_audit(
+            &request.audit_log,
+            json!({
+                "event": "attempt_started",
+                "timestamp": OffsetDateTime::now_utc().to_string(),
+                "name": &request.name,
+                "attempt": attempt,
+            }),
+        )?;
+        let started = Instant::now();
+        let mut command = ProcessCommand::new(&request.command);
+        command.args(&request.args);
+        if let Some(working_directory) = &request.working_directory {
+            command.current_dir(working_directory);
+        }
+
+        let (exit_code, error) = match command.spawn() {
+            Ok(mut child) => match child.wait() {
+                Ok(status) => (status.code(), None),
+                Err(error) => (None, Some(error.to_string())),
+            },
+            Err(error) => (None, Some(error.to_string())),
+        };
+        let runtime_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let success = exit_code == Some(request.success_exit_code);
+        final_exit_code = exit_code;
+        let attempt_report = WorkerWatchdogAttempt {
+            attempt,
+            exit_code,
+            success,
+            runtime_ms,
+            error: error.clone(),
+        };
+        write_watchdog_audit(
+            &request.audit_log,
+            json!({
+                "event": "attempt_exited",
+                "timestamp": OffsetDateTime::now_utc().to_string(),
+                "name": &request.name,
+                "attempt": attempt,
+                "exit_code": exit_code,
+                "success": success,
+                "runtime_ms": runtime_ms,
+                "error": error,
+            }),
+        )?;
+        attempts.push(attempt_report);
+
+        if success {
+            let recovered = restarts > 0;
+            write_watchdog_audit(
+                &request.audit_log,
+                json!({
+                    "event": if recovered { "worker_recovered" } else { "worker_healthy" },
+                    "timestamp": OffsetDateTime::now_utc().to_string(),
+                    "name": &request.name,
+                    "attempt": attempt,
+                    "restarts": restarts,
+                }),
+            )?;
+            return Ok(WorkerWatchdogReport {
+                healthy: true,
+                status: "healthy".to_owned(),
+                name: request.name,
+                command: request.command,
+                args_count: request.args.len(),
+                working_directory: request.working_directory,
+                audit_log: request.audit_log,
+                attempts,
+                restarts,
+                max_restarts: request.max_restarts,
+                recovered,
+                final_exit_code,
+            });
+        }
+
+        if attempt <= request.max_restarts {
+            restarts += 1;
+            write_watchdog_audit(
+                &request.audit_log,
+                json!({
+                    "event": "restart_scheduled",
+                    "timestamp": OffsetDateTime::now_utc().to_string(),
+                    "name": &request.name,
+                    "attempt": attempt,
+                    "restart": restarts,
+                    "delay_ms": request.restart_delay_ms,
+                }),
+            )?;
+            if request.restart_delay_ms > 0 {
+                std::thread::sleep(StdDuration::from_millis(request.restart_delay_ms));
+            }
+        }
+    }
+
+    write_watchdog_audit(
+        &request.audit_log,
+        json!({
+            "event": "watchdog_failed",
+            "timestamp": OffsetDateTime::now_utc().to_string(),
+            "name": &request.name,
+            "attempts": attempts.len(),
+            "restarts": restarts,
+            "final_exit_code": final_exit_code,
+        }),
+    )?;
+    Ok(WorkerWatchdogReport {
+        healthy: false,
+        status: "failed".to_owned(),
+        name: request.name,
+        command: request.command,
+        args_count: request.args.len(),
+        working_directory: request.working_directory,
+        audit_log: request.audit_log,
+        attempts,
+        restarts,
+        max_restarts: request.max_restarts,
+        recovered: false,
+        final_exit_code,
+    })
+}
+
+fn validate_watchdog_value(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("watchdog {field} cannot be empty");
+    }
+    if value
+        .chars()
+        .any(|character| matches!(character, '\n' | '\r' | '\0'))
+    {
+        bail!("watchdog {field} cannot contain newline, carriage return, or NUL");
+    }
+    Ok(())
+}
+
+fn write_watchdog_audit(path: &PathBuf, event: Value) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open watchdog audit log {}", path.display()))?;
+    file.write_all(serde_json::to_string(&event)?.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
 }
 
 fn serve_dashboard(request: DashboardServeRequest) -> Result<Value> {
@@ -4795,6 +5066,7 @@ fn write_acceptance_pack(output_dir: &Path, title: &str) -> Result<Value> {
             "secure device pairing",
             "signed policy rule pack",
             "quorum registry enrollment",
+            "worker watchdog recovery",
             "package provenance"
         ]
     });
@@ -4904,6 +5176,9 @@ try {{
     $rotationProof = Join-Path $firstRunRoot 'data\operators\lead-rotation-proof.json'
     $vault = Join-Path $Run 'mission.vault.json'
     $vaultPayload = Join-Path $Run 'vault-payload.json'
+    $watchdogScript = Join-Path $Run 'watchdog-worker.ps1'
+    $watchdogState = Join-Path $Run 'watchdog-worker.state'
+    $watchdogAudit = Join-Path $Run 'watchdog-audit.jsonl'
 
     'acceptance local passphrase' | Set-Content -Encoding UTF8 $passphrase
     'acceptance deputy passphrase' | Set-Content -Encoding UTF8 $deputyPassphrase
@@ -4911,6 +5186,14 @@ try {{
     '{{"water_level_m":5.2}}' | Set-Content -Encoding UTF8 $payload
     '{{"team_id":"alpha"}}' | Set-Content -Encoding UTF8 $dispatchPayload
     '{{"note":"vault runtime append"}}' | Set-Content -Encoding UTF8 $vaultPayload
+@'
+param([string]$State)
+if (-not (Test-Path $State)) {{
+    'first failure' | Set-Content -Encoding UTF8 $State
+    exit 7
+}}
+exit 0
+'@ | Set-Content -Encoding UTF8 $watchdogScript
     '[{{"id":"sensor-1","source":"river-gauge","kind":"sensor","confidence":0.94,"digest":"sensor-digest","excerpt":"water=5.2"}}]' | Set-Content -Encoding UTF8 $evidence
     '{{"type":"Feature","id":"river-east","properties":{{"risk":"flood"}},"geometry":{{"type":"Point","coordinates":[72.2,31.2]}}}}' | Set-Content -Encoding UTF8 $geo
 
@@ -4924,6 +5207,7 @@ try {{
     Invoke-AstraGrid vault init --ledger $vault --passphrase-file $passphrase --mission flood-watch-vault
     Invoke-AstraGrid vault append --ledger $vault --passphrase-file $passphrase --actor lead --role incident_commander --action annotate_situation --subject river-east --payload "@$vaultPayload"
     Invoke-AstraGrid vault verify --ledger $vault --passphrase-file $passphrase
+    Invoke-AstraGrid supervisor watchdog-run --name acceptance-worker --command powershell --arg -NoProfile --arg -ExecutionPolicy --arg Bypass --arg -File --arg $watchdogScript --arg $watchdogState --audit-log $watchdogAudit --max-restarts 2 --restart-delay-ms 0
 
     Invoke-AstraGrid init --mission flood-watch --ledger $ledger
     Invoke-AstraGrid identity create --path $identity --name lead --role incident_commander --passphrase-file $passphrase
@@ -6476,16 +6760,17 @@ mod tests {
         ReadinessGateRequest, RecommendCommands, RegistryQuorumChangeKind,
         RegistryQuorumProposalRequest, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
         RestoreRequest, RotateOperatorRequest, SetupCommands, TeamAppendRequest,
-        TeamSessionIssueRequest, VaultAppendRequest, VaultCommands, WorkspaceProfile,
-        acceptance_scenario, apply_registry_quorum_proposal, authorize_team_action,
-        build_registry_trust_bundle, create_device_pairing, create_registry_quorum_proposal,
-        default_signature_output_path, evaluate_policy_pack_file, export_ops_bundle,
-        http_request_path, http_response, import_registry_trust_bundle, inject_meta_refresh,
-        issue_team_session, read_payload, render_acceptance_script, render_default_launcher,
-        restore_workspace_backup, rotate_operator_key, run_artifact_retention, run_first_run_setup,
-        run_profile_doctor, run_readiness_gate, sha256_file_hex, sign_registry_quorum_proposal,
-        team_append_signed, vault_append, vault_init, vault_tail, vault_verify,
-        verify_device_pairing_file, verify_policy_pack_file, verify_registry_quorum_proposal_file,
+        TeamSessionIssueRequest, VaultAppendRequest, VaultCommands, WorkerWatchdogRequest,
+        WorkspaceProfile, acceptance_scenario, apply_registry_quorum_proposal,
+        authorize_team_action, build_registry_trust_bundle, create_device_pairing,
+        create_registry_quorum_proposal, default_signature_output_path, evaluate_policy_pack_file,
+        export_ops_bundle, http_request_path, http_response, import_registry_trust_bundle,
+        inject_meta_refresh, issue_team_session, read_payload, render_acceptance_script,
+        render_default_launcher, restore_workspace_backup, rotate_operator_key,
+        run_artifact_retention, run_first_run_setup, run_profile_doctor, run_readiness_gate,
+        run_worker_watchdog, sha256_file_hex, sign_registry_quorum_proposal, team_append_signed,
+        vault_append, vault_init, vault_tail, vault_verify, verify_device_pairing_file,
+        verify_policy_pack_file, verify_registry_quorum_proposal_file,
         verify_registry_trust_bundle, verify_team_session_file, write_acceptance_pack,
         write_release_custody_pack, write_release_evidence_pack, write_workspace_backup,
     };
@@ -6503,6 +6788,61 @@ mod tests {
             .save_encrypted_to_file(&key_path, b"test-pass")
             .unwrap();
         (keypair, key_path, passphrase_path)
+    }
+
+    #[cfg(windows)]
+    fn watchdog_exit_command(code: i32) -> (String, Vec<String>) {
+        (
+            "cmd".to_owned(),
+            vec!["/C".to_owned(), format!("exit /B {code}")],
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn watchdog_exit_command(code: i32) -> (String, Vec<String>) {
+        (
+            "sh".to_owned(),
+            vec!["-c".to_owned(), format!("exit {code}")],
+        )
+    }
+
+    #[cfg(windows)]
+    fn watchdog_fail_once_command(root: &Path) -> (String, Vec<String>, PathBuf) {
+        let script = root.join("fail-once.cmd");
+        let state = root.join("fail-once.state");
+        fs::write(
+            &script,
+            "@echo off\r\nif not exist \"%~1\" (\r\n  echo seen>\"%~1\"\r\n  exit /b 7\r\n)\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        (
+            "cmd".to_owned(),
+            vec![
+                "/C".to_owned(),
+                script.to_string_lossy().into_owned(),
+                state.to_string_lossy().into_owned(),
+            ],
+            state,
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn watchdog_fail_once_command(root: &Path) -> (String, Vec<String>, PathBuf) {
+        let script = root.join("fail-once.sh");
+        let state = root.join("fail-once.state");
+        fs::write(
+            &script,
+            "#!/bin/sh\nif [ ! -f \"$1\" ]; then\n  echo seen > \"$1\"\n  exit 7\nfi\nexit 0\n",
+        )
+        .unwrap();
+        (
+            "sh".to_owned(),
+            vec![
+                script.to_string_lossy().into_owned(),
+                state.to_string_lossy().into_owned(),
+            ],
+            state,
+        )
     }
 
     #[test]
@@ -8596,5 +8936,107 @@ mod tests {
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_supervisor_watchdog_run_command() {
+        let cli = Cli::try_parse_from([
+            "astragrid",
+            "supervisor",
+            "watchdog-run",
+            "--name",
+            "peer-worker",
+            "--command",
+            "astragrid",
+            "--arg",
+            "peer-queue",
+            "--arg",
+            "worker",
+            "--audit-log",
+            "ops/watchdog.jsonl",
+            "--max-restarts",
+            "2",
+            "--restart-delay-ms",
+            "0",
+        ])
+        .unwrap();
+
+        match cli.command.expect("command") {
+            Commands::Supervisor {
+                command:
+                    super::SupervisorCommands::WatchdogRun {
+                        name,
+                        command,
+                        args,
+                        audit_log,
+                        max_restarts,
+                        restart_delay_ms,
+                        ..
+                    },
+            } => {
+                assert_eq!(name, "peer-worker");
+                assert_eq!(command, "astragrid");
+                assert_eq!(args, vec!["peer-queue", "worker"]);
+                assert_eq!(audit_log, PathBuf::from("ops/watchdog.jsonl"));
+                assert_eq!(max_restarts, 2);
+                assert_eq!(restart_delay_ms, 0);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watchdog_recovers_worker_after_restart() {
+        let dir = tempdir().unwrap();
+        let audit = dir.path().join("watchdog.jsonl");
+        let (command, args, state) = watchdog_fail_once_command(dir.path());
+
+        let report = run_worker_watchdog(WorkerWatchdogRequest {
+            name: "recovering-worker".to_owned(),
+            command,
+            args,
+            working_directory: None,
+            audit_log: audit.clone(),
+            max_restarts: 2,
+            restart_delay_ms: 0,
+            success_exit_code: 0,
+        })
+        .unwrap();
+
+        assert!(report.healthy);
+        assert!(report.recovered);
+        assert_eq!(report.attempts.len(), 2);
+        assert_eq!(report.restarts, 1);
+        assert!(state.exists());
+        let audit_text = fs::read_to_string(audit).unwrap();
+        assert!(audit_text.contains("\"event\":\"restart_scheduled\""));
+        assert!(audit_text.contains("\"event\":\"worker_recovered\""));
+    }
+
+    #[test]
+    fn watchdog_reports_failure_after_restart_budget() {
+        let dir = tempdir().unwrap();
+        let audit = dir.path().join("watchdog.jsonl");
+        let (command, args) = watchdog_exit_command(9);
+
+        let report = run_worker_watchdog(WorkerWatchdogRequest {
+            name: "failing-worker".to_owned(),
+            command,
+            args,
+            working_directory: None,
+            audit_log: audit.clone(),
+            max_restarts: 1,
+            restart_delay_ms: 0,
+            success_exit_code: 0,
+        })
+        .unwrap();
+
+        assert!(!report.healthy);
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.attempts.len(), 2);
+        assert_eq!(report.restarts, 1);
+        assert_eq!(report.final_exit_code, Some(9));
+        let audit_text = fs::read_to_string(audit).unwrap();
+        assert!(audit_text.contains("\"event\":\"watchdog_failed\""));
     }
 }

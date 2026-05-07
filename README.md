@@ -66,6 +66,7 @@ and a CLI.
 - Double-click friendly Windows launcher guidance and packaged executable smoke helper.
 - Packaged Windows installer script with version smoke and install manifest output.
 - Package smoke automation that extracts, verifies, launches, and installer-checks the release zip.
+- Live worker watchdog that restarts failed local workers within a capped budget and writes JSONL recovery audit.
 - Dry-run-first artifact retention command for cache, old dist releases, and optional target build cache cleanup.
 - No-fake A-to-Z master implementation plan with external trust and hardware gates called out.
 - Payload size limit and deterministic payload hashing.
@@ -74,6 +75,7 @@ and a CLI.
 - Multi-signature provenance quorum verification with distinct signer thresholds.
 - One-shot release custody pack generation for signatures, quorum, policy, manifest, and healthy doctor gate.
 - Deterministic supervisor artifact generation for peer queue workers.
+- Watchdog recovery runner for local long-running workers.
 - Peer worker service kits with generated install and uninstall wrappers.
 - Runnable mission acceptance pack generation.
 - Peer queue health telemetry snapshots.

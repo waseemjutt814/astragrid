@@ -230,6 +230,14 @@ requiring a separate scheduler. `peer-queue worker` runs the same processor for 
 as a long-lived daemon loop. `peer-queue health` returns a snapshot of due jobs, stale retrying
 jobs, failed counts, and recent errors for dashboards and supervisor probes.
 
+## Worker Watchdog
+
+`supervisor watchdog-run` starts a local worker process without shell interpolation, waits for it
+to exit, and restarts it only while the configured restart budget remains. Each attempt writes a
+JSONL audit event for start, exit, restart scheduling, recovery, or final failure. The command
+fails closed when the child never reaches the expected success exit code, so wrapper scripts and
+operator runbooks can detect exhausted recovery instead of assuming the worker is healthy.
+
 ## Harvesting
 
 `astragrid-harvest` fetches remote GeoJSON or OGC API Features URLs, applies optional `limit` and
