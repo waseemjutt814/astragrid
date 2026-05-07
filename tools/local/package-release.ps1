@@ -8,6 +8,33 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Test-GitDirtyExcludingGeneratedOutputs {
+    param([string[]]$IgnoredPrefixes)
+
+    $statusLines = @(git status --porcelain 2>$null)
+    foreach ($line in $statusLines) {
+        if ($line.Length -lt 4) {
+            continue
+        }
+        $path = $line.Substring(3).Trim()
+        if ($path.Contains(" -> ")) {
+            $path = ($path -split " -> ")[-1].Trim()
+        }
+        $path = $path.Trim('"').Replace('\', '/')
+        $ignored = $false
+        foreach ($prefix in $IgnoredPrefixes) {
+            if ($path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $ignored = $true
+                break
+            }
+        }
+        if (-not $ignored) {
+            return $true
+        }
+    }
+    return $false
+}
+
 Push-Location $ProjectRoot
 try {
     if ($PassphraseFile -and -not $SigningIdentity) {
@@ -40,7 +67,7 @@ try {
         $gitCommit = $null
     }
     try {
-        $gitDirty = ((git status --porcelain 2>$null | Measure-Object).Count -gt 0)
+        $gitDirty = Test-GitDirtyExcludingGeneratedOutputs -IgnoredPrefixes @("dist/", ".cache/")
     }
     catch {
         $gitDirty = $null

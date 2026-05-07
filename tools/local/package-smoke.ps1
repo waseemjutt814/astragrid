@@ -7,6 +7,31 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Remove-TreeWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$Attempts = 10,
+        [int]$DelayMilliseconds = 250
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force
+            return
+        }
+        catch {
+            if ($attempt -eq $Attempts) {
+                throw
+            }
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+}
+
 Push-Location $ProjectRoot
 try {
     if (-not $Artifact) {
@@ -29,7 +54,7 @@ try {
     }
 
     if (Test-Path -LiteralPath $smokePath) {
-        Remove-Item -LiteralPath $smokePath -Recurse -Force
+        Remove-TreeWithRetry -Path $smokePath
     }
     New-Item -ItemType Directory -Path $smokePath -Force | Out-Null
     Expand-Archive -LiteralPath $artifactPath -DestinationPath $smokePath -Force
@@ -88,7 +113,7 @@ try {
     $report | ConvertTo-Json -Depth 6
 
     if (-not $KeepExtracted) {
-        Remove-Item -LiteralPath $smokePath -Recurse -Force
+        Remove-TreeWithRetry -Path $smokePath
     }
 }
 finally {
