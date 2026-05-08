@@ -12,17 +12,17 @@
         "verification": {
           "checks": [
             {
-              "actual_sha256": "f178a68234df16482c2b7f593655ff8bed316e367865abbcf5e3141ebba1e26d",
+              "actual_sha256": "98d87f4597979a901e30d7b643b842b04feaf3483cfb6269bb09ce37f9c90b1e",
               "detail": "sha256 matches",
-              "expected_sha256": "f178a68234df16482c2b7f593655ff8bed316e367865abbcf5e3141ebba1e26d",
+              "expected_sha256": "98d87f4597979a901e30d7b643b842b04feaf3483cfb6269bb09ce37f9c90b1e",
               "name": "artifact",
               "path": "dist\\astragrid-windows-x64-0.1.0.zip",
               "status": "match"
             },
             {
-              "actual_sha256": "6724f6929b7d5a0200dd33868f1ffe1c690b527f1ff7fd8bec940b6ddededde8",
+              "actual_sha256": "288deaabaceafe3c6f03b3104fcfb20a69ca4a0bf1ba13bc3c2b0374623c5411",
               "detail": "sha256 matches",
-              "expected_sha256": "6724f6929b7d5a0200dd33868f1ffe1c690b527f1ff7fd8bec940b6ddededde8",
+              "expected_sha256": "288deaabaceafe3c6f03b3104fcfb20a69ca4a0bf1ba13bc3c2b0374623c5411",
               "name": "binary",
               "path": "dist\\..\\target\\release\\astragrid.exe",
               "status": "match"
@@ -38,9 +38,9 @@
       "detail": {
         "path": "dist\\astragrid-windows-x64-0.1.0.provenance.sig.json",
         "verification": {
-          "actual_sha256": "44c730c26e29bb3ec2d8f8580d8beb99bfce4ad6cdce817f80a0e78a79aa4c6d",
+          "actual_sha256": "9e048f06f85f39734161271f80f204d26007e8e148cc8a2b2081660a2cd34be3",
           "detail": "provenance signature is valid",
-          "expected_sha256": "44c730c26e29bb3ec2d8f8580d8beb99bfce4ad6cdce817f80a0e78a79aa4c6d",
+          "expected_sha256": "9e048f06f85f39734161271f80f204d26007e8e148cc8a2b2081660a2cd34be3",
           "provenance_hash_match": true,
           "provenance_path": "dist\\astragrid-windows-x64-0.1.0.provenance.json",
           "signature_valid": true,
@@ -64,9 +64,9 @@
           "distinct_valid_signers": 1,
           "reports": [
             {
-              "actual_sha256": "44c730c26e29bb3ec2d8f8580d8beb99bfce4ad6cdce817f80a0e78a79aa4c6d",
+              "actual_sha256": "9e048f06f85f39734161271f80f204d26007e8e148cc8a2b2081660a2cd34be3",
               "detail": "provenance signature is valid",
-              "expected_sha256": "44c730c26e29bb3ec2d8f8580d8beb99bfce4ad6cdce817f80a0e78a79aa4c6d",
+              "expected_sha256": "9e048f06f85f39734161271f80f204d26007e8e148cc8a2b2081660a2cd34be3",
               "provenance_hash_match": true,
               "provenance_path": "dist\\astragrid-windows-x64-0.1.0.provenance.json",
               "signature_valid": true,
