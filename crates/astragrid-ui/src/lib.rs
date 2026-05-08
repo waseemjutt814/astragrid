@@ -471,6 +471,8 @@ function renderSummary(summary) {{
     ["Dispatches", summary.dispatches],
     ["Annotations", summary.annotations],
     ["Store events", summary.store_events ?? "--"],
+    ["Project work records", summary.devops_records],
+    ["Project work failures", summary.failed_devops_records],
     ["Sync mode", peerHealthLabel(summary.peer_health_status)],
     ["Peer jobs due now", summary.peer_due],
     ["Evidence packs", summary.evidence_bundles],
@@ -553,6 +555,7 @@ function renderAttention(summary, approvals, peers) {{
   if (pending.length > 0) rows.push(["Approval queue", pill(plural(pending.length, "decision waiting", "decisions waiting"))]);
   if (summary.peer_due > 0) rows.push(["Peer sync", pill(plural(summary.peer_due, "job due now", "jobs due now"))]);
   if (failedPeers.length > 0) rows.push(["Sync risk", pill(plural(failedPeers.length, "job retrying or failed", "jobs retrying or failed"))]);
+  if (summary.failed_devops_records > 0) rows.push(["Project work", pill(plural(summary.failed_devops_records, "failed record", "failed records"))]);
   if (summary.evidence_bundles > 0) rows.push(["Evidence", plural(summary.evidence_bundles, "pack attached", "packs attached")]);
   document.getElementById("overview-attention-rows").innerHTML = rows.length === 0
     ? emptyRow(2, "No immediate operator attention items.")
@@ -674,6 +677,27 @@ fn operator_summary(document: &DashboardDocument) -> OperatorConsoleSummary<'_> 
         observations: document.state.observations,
         dispatches: document.state.dispatches,
         annotations: document.state.annotations,
+        devops_records: document
+            .recent_events
+            .iter()
+            .filter(|event| {
+                event.payload.get("source").and_then(|value| value.as_str())
+                    == Some("astragrid-devops-blackbox")
+            })
+            .count(),
+        failed_devops_records: document
+            .recent_events
+            .iter()
+            .filter(|event| {
+                event.payload.get("source").and_then(|value| value.as_str())
+                    == Some("astragrid-devops-blackbox")
+                    && event
+                        .payload
+                        .get("status")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|status| status == "failed" || status == "spawn_failed")
+            })
+            .count(),
         store_events: document.store.as_ref().map(|store| store.event_count),
         approvals: document.approvals.len(),
         pending_approvals,
@@ -700,6 +724,8 @@ struct OperatorConsoleSummary<'a> {
     observations: usize,
     dispatches: usize,
     annotations: usize,
+    devops_records: usize,
+    failed_devops_records: usize,
     store_events: Option<u64>,
     approvals: usize,
     pending_approvals: usize,
@@ -793,6 +819,8 @@ mod tests {
         assert_eq!(value["mission"], "flood-watch");
         assert_eq!(value["open_incidents"], 1);
         assert_eq!(value["peer_health_status"], "not_configured");
+        assert_eq!(value["devops_records"], 0);
+        assert_eq!(value["failed_devops_records"], 0);
         assert_eq!(value["map_href"], "map-console.html");
     }
 

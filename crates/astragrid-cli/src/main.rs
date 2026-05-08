@@ -1,5 +1,6 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as FmtWrite,
     fs,
     io::{self, IsTerminal, Read, Write},
     net::{TcpListener, TcpStream},
@@ -12,9 +13,9 @@ use anyhow::{Context, Result, bail};
 use astragrid_ai::{AiRunnerConfig, AiRunnerRequest, run_evidence_bound_runner};
 use astragrid_approvals::{ApprovalLog, ApprovalStatus};
 use astragrid_core::{
-    Action, Actor, CommandRequest, DetachedSignature, MissionLedger, OperatorIdentity,
-    OperatorKeypair, OperatorRegistry, OperatorRegistryEntry, OperatorStatus, PAYLOAD_LIMIT_BYTES,
-    Priority, RegistryImportStatus, Role,
+    Action, Actor, CommandRequest, DetachedSignature, MissionEvent, MissionLedger,
+    OperatorIdentity, OperatorKeypair, OperatorRegistry, OperatorRegistryEntry, OperatorStatus,
+    PAYLOAD_LIMIT_BYTES, Priority, RegistryImportStatus, Role,
 };
 use astragrid_crypto::SealedArtifact;
 use astragrid_dashboard::DashboardDocument;
@@ -174,8 +175,24 @@ enum DevCommands {
         name: String,
         #[arg(long)]
         detail: Option<String>,
+        #[arg(long, default_value_t = false)]
+        require_pass: bool,
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+    /// Export an operator-readable DevOps Blackbox report.
+    Report {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
+    /// Validate a DevOps Blackbox profile and workspace paths.
+    Doctor {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
     },
     /// Print a compact DevOps Blackbox status summary.
     Status {
@@ -1956,13 +1973,25 @@ fn main() -> Result<()> {
                 profile,
                 name,
                 detail,
+                require_pass,
                 command,
             } => print_json(&run_dev_command(DevRunRequest {
                 profile,
                 name,
                 detail,
+                require_pass,
                 command,
             })?),
+            DevCommands::Report {
+                profile,
+                output,
+                limit,
+            } => print_json(&write_dev_report(DevReportRequest {
+                profile,
+                output,
+                limit,
+            })?),
+            DevCommands::Doctor { profile } => print_json(&run_dev_doctor(&profile)?),
             DevCommands::Status { profile, limit } => print_json(&dev_status(&profile, limit)?),
         },
         Commands::Init {
@@ -3915,7 +3944,14 @@ struct DevRunRequest {
     profile: PathBuf,
     name: String,
     detail: Option<String>,
+    require_pass: bool,
     command: Vec<String>,
+}
+
+struct DevReportRequest {
+    profile: PathBuf,
+    output: Option<PathBuf>,
+    limit: usize,
 }
 
 struct DevWorkspace {
@@ -5615,7 +5651,15 @@ fn run_dev_command(request: DevRunRequest) -> Result<Value> {
         "run": command_report,
         "git": dev_git_snapshot(),
     });
-    append_dev_payload(&request.profile, kind, payload)
+    let report = append_dev_payload(&request.profile, kind, payload)?;
+    if request.require_pass && status != "passed" {
+        bail!(
+            "dev run '{}' recorded failure with status {}",
+            request.name,
+            status
+        );
+    }
+    Ok(report)
 }
 
 fn dev_status(profile_path: &PathBuf, limit: usize) -> Result<Value> {
@@ -5623,6 +5667,26 @@ fn dev_status(profile_path: &PathBuf, limit: usize) -> Result<Value> {
     let ledger = MissionLedger::open(&workspace.ledger);
     let verification = ledger.verify()?;
     let events = ledger.load_events()?;
+    let mut kind_counts = BTreeMap::<String, usize>::new();
+    let mut status_counts = BTreeMap::<String, usize>::new();
+    let mut devops_records = 0_usize;
+    let mut failed_records = 0_usize;
+    let mut last_failure = None;
+    for event in &events {
+        if !is_devops_event(event) {
+            continue;
+        }
+        devops_records += 1;
+        let kind = dev_event_field(event, "kind").unwrap_or("unknown");
+        *kind_counts.entry(kind.to_owned()).or_default() += 1;
+        if let Some(status) = dev_event_field(event, "status") {
+            *status_counts.entry(status.to_owned()).or_default() += 1;
+            if status == "failed" || status == "spawn_failed" {
+                failed_records += 1;
+                last_failure = Some(dev_event_json(event));
+            }
+        }
+    }
     let recent = events
         .iter()
         .rev()
@@ -5648,9 +5712,51 @@ fn dev_status(profile_path: &PathBuf, limit: usize) -> Result<Value> {
         "ledger": workspace.ledger,
         "verified": verification.valid,
         "events": events.len(),
+        "devops_records": devops_records,
+        "failed_devops_records": failed_records,
+        "kind_counts": kind_counts,
+        "status_counts": status_counts,
+        "last_failure": last_failure,
         "last_hash": verification.last_hash,
         "recent": recent,
         "git": dev_git_snapshot(),
+    }))
+}
+
+fn run_dev_doctor(profile_path: &PathBuf) -> Result<Value> {
+    let workspace = load_dev_workspace(profile_path)?;
+    let profile_report = run_profile_doctor(profile_path)?;
+    let ledger = MissionLedger::open(&workspace.ledger);
+    let verification = ledger.verify()?;
+    Ok(json!({
+        "profile": workspace.profile,
+        "root": workspace.root,
+        "ledger": workspace.ledger,
+        "db": workspace.db,
+        "identity": workspace.identity,
+        "registry": workspace.registry,
+        "verified": verification.valid,
+        "last_hash": verification.last_hash,
+        "profile_doctor": profile_report,
+    }))
+}
+
+fn write_dev_report(request: DevReportRequest) -> Result<Value> {
+    let workspace = load_dev_workspace(&request.profile)?;
+    let ledger = MissionLedger::open(&workspace.ledger);
+    let verification = ledger.verify()?;
+    let events = ledger.load_events()?;
+    let output = request
+        .output
+        .unwrap_or_else(|| workspace.root.join("data/reports/devops-blackbox.md"));
+    let markdown = render_dev_report(&workspace, &events, verification.valid, request.limit)?;
+    write_text_file(&output, &markdown)?;
+    Ok(json!({
+        "profile": workspace.profile,
+        "output": output,
+        "verified": verification.valid,
+        "events": events.len(),
+        "sha256": sha256_file_hex(&output)?,
     }))
 }
 
@@ -5683,6 +5789,156 @@ fn append_dev_payload(profile_path: &PathBuf, kind: DevEventKind, payload: Value
         "event": event,
         "store_ingest": ingest,
     }))
+}
+
+fn render_dev_report(
+    workspace: &DevWorkspace,
+    events: &[MissionEvent],
+    verified: bool,
+    limit: usize,
+) -> Result<String> {
+    let devops_events = events
+        .iter()
+        .filter(|event| is_devops_event(event))
+        .collect::<Vec<_>>();
+    let mut kind_counts = BTreeMap::<String, usize>::new();
+    let mut status_counts = BTreeMap::<String, usize>::new();
+    for event in &devops_events {
+        let kind = dev_event_field(event, "kind").unwrap_or("unknown");
+        *kind_counts.entry(kind.to_owned()).or_default() += 1;
+        if let Some(status) = dev_event_field(event, "status") {
+            *status_counts.entry(status.to_owned()).or_default() += 1;
+        }
+    }
+
+    let mut markdown = String::new();
+    writeln!(&mut markdown, "# AstraGrid DevOps Blackbox Report")?;
+    writeln!(&mut markdown)?;
+    writeln!(
+        &mut markdown,
+        "- Profile: `{}`",
+        workspace.profile.display()
+    )?;
+    writeln!(&mut markdown, "- Root: `{}`", workspace.root.display())?;
+    writeln!(&mut markdown, "- Ledger verified: `{verified}`")?;
+    writeln!(&mut markdown, "- Ledger events: `{}`", events.len())?;
+    writeln!(&mut markdown, "- DevOps records: `{}`", devops_events.len())?;
+
+    let git = dev_git_snapshot();
+    writeln!(&mut markdown)?;
+    writeln!(&mut markdown, "## Current Git Snapshot")?;
+    writeln!(
+        &mut markdown,
+        "- Branch: `{}`",
+        json_text(git.get("branch")).unwrap_or("--")
+    )?;
+    writeln!(
+        &mut markdown,
+        "- Commit: `{}`",
+        json_text(git.get("head")).unwrap_or("--")
+    )?;
+    writeln!(
+        &mut markdown,
+        "- Dirty: `{}`",
+        git.get("dirty").and_then(Value::as_bool).unwrap_or(false)
+    )?;
+
+    writeln!(&mut markdown)?;
+    writeln!(&mut markdown, "## Counts By Kind")?;
+    if kind_counts.is_empty() {
+        writeln!(&mut markdown, "- No DevOps records yet.")?;
+    } else {
+        for (kind, count) in &kind_counts {
+            writeln!(&mut markdown, "- `{kind}`: `{count}`")?;
+        }
+    }
+
+    writeln!(&mut markdown)?;
+    writeln!(&mut markdown, "## Counts By Status")?;
+    if status_counts.is_empty() {
+        writeln!(&mut markdown, "- No status values recorded yet.")?;
+    } else {
+        for (status, count) in &status_counts {
+            writeln!(&mut markdown, "- `{status}`: `{count}`")?;
+        }
+    }
+
+    writeln!(&mut markdown)?;
+    writeln!(&mut markdown, "## Recent DevOps Records")?;
+    writeln!(&mut markdown, "| Seq | Kind | Status | Summary | Proof |")?;
+    writeln!(&mut markdown, "| --- | --- | --- | --- | --- |")?;
+    for event in devops_events.iter().rev().take(limit) {
+        writeln!(
+            &mut markdown,
+            "| {} | `{}` | `{}` | {} | `{}` |",
+            event.sequence,
+            dev_event_field(event, "kind").unwrap_or("unknown"),
+            dev_event_field(event, "status").unwrap_or("--"),
+            markdown_cell(dev_event_field(event, "summary").unwrap_or("--")),
+            short_hash(&event.hash),
+        )?;
+    }
+
+    if let Some(failure) = devops_events.iter().rev().find(|event| {
+        dev_event_field(event, "status")
+            .is_some_and(|status| status == "failed" || status == "spawn_failed")
+    }) {
+        writeln!(&mut markdown)?;
+        writeln!(&mut markdown, "## Latest Failure")?;
+        writeln!(&mut markdown, "- Sequence: `{}`", failure.sequence)?;
+        writeln!(
+            &mut markdown,
+            "- Summary: {}",
+            markdown_cell(dev_event_field(failure, "summary").unwrap_or("--"))
+        )?;
+        writeln!(&mut markdown, "- Proof: `{}`", failure.hash)?;
+        if let Some(stderr) = failure
+            .payload
+            .get("run")
+            .and_then(|run| run.get("stderr_tail"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            writeln!(&mut markdown)?;
+            writeln!(&mut markdown, "```text")?;
+            writeln!(&mut markdown, "{}", stderr.trim())?;
+            writeln!(&mut markdown, "```")?;
+        }
+    }
+
+    Ok(markdown)
+}
+
+fn is_devops_event(event: &MissionEvent) -> bool {
+    event.payload.get("source").and_then(Value::as_str) == Some("astragrid-devops-blackbox")
+}
+
+fn dev_event_field<'a>(event: &'a MissionEvent, key: &str) -> Option<&'a str> {
+    event.payload.get(key).and_then(Value::as_str)
+}
+
+fn dev_event_json(event: &MissionEvent) -> Value {
+    json!({
+        "sequence": event.sequence,
+        "kind": dev_event_field(event, "kind"),
+        "status": dev_event_field(event, "status"),
+        "summary": dev_event_field(event, "summary"),
+        "hash": event.hash,
+    })
+}
+
+fn json_text(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+fn short_hash(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
+}
+
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
 }
 
 fn infer_dev_run_kind(name: &str, success: bool) -> DevEventKind {
@@ -8606,9 +8862,9 @@ mod tests {
 
     use super::{
         ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands, DevCommands,
-        DevEventKind, DevInitRequest, DevRecordRequest, DevicePairingRequest, DoctorCommands,
-        FederationDaemonRequest, FirstRunRequest, GeoCommands, IdentityCommands, NetCommands,
-        OpsBundleRequest, OpsCommands, PeerQueueCommands, PeerQueueWorkerRequest,
+        DevEventKind, DevInitRequest, DevRecordRequest, DevReportRequest, DevicePairingRequest,
+        DoctorCommands, FederationDaemonRequest, FirstRunRequest, GeoCommands, IdentityCommands,
+        NetCommands, OpsBundleRequest, OpsCommands, PeerQueueCommands, PeerQueueWorkerRequest,
         PolicyPackCommands, ProvenanceCommands, ReadinessGateRequest, RecommendCommands,
         RegistryQuorumChangeKind, RegistryQuorumProposalRequest, ReleaseCustodyPackRequest,
         ReleaseEvidencePackRequest, RestoreRequest, RotateOperatorRequest, SetupCommands,
@@ -8620,13 +8876,14 @@ mod tests {
         import_registry_trust_bundle, inject_meta_refresh, issue_team_session, read_json_file,
         read_payload, record_dev_event, render_acceptance_script, render_default_launcher,
         resolve_operator_console_auth_token, resolve_ui_serve_artifacts, restore_workspace_backup,
-        rotate_operator_key, run_artifact_retention, run_dev_init, run_federation_daemon,
-        run_first_run_setup, run_peer_queue_worker, run_profile_doctor, run_readiness_gate,
-        run_worker_watchdog, sha256_file_hex, sign_registry_quorum_proposal, team_append_signed,
-        vault_append, vault_init, vault_tail, vault_verify, verify_device_pairing_file,
-        verify_policy_pack_file, verify_registry_quorum_proposal_file,
+        rotate_operator_key, run_artifact_retention, run_dev_doctor, run_dev_init,
+        run_federation_daemon, run_first_run_setup, run_peer_queue_worker, run_profile_doctor,
+        run_readiness_gate, run_worker_watchdog, sha256_file_hex, sign_registry_quorum_proposal,
+        team_append_signed, vault_append, vault_init, vault_tail, vault_verify,
+        verify_device_pairing_file, verify_policy_pack_file, verify_registry_quorum_proposal_file,
         verify_registry_trust_bundle, verify_team_session_file, write_acceptance_pack,
-        write_release_custody_pack, write_release_evidence_pack, write_workspace_backup,
+        write_dev_report, write_release_custody_pack, write_release_evidence_pack,
+        write_workspace_backup,
     };
 
     fn save_test_key(
@@ -9044,6 +9301,64 @@ mod tests {
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
+
+        let run = Cli::try_parse_from([
+            "astragrid",
+            "dev",
+            "run",
+            "--require-pass",
+            "--name",
+            "workspace gate",
+            "--",
+            "cargo",
+            "test",
+        ])
+        .unwrap();
+        match run.command.expect("command") {
+            Commands::Dev {
+                command:
+                    DevCommands::Run {
+                        name,
+                        require_pass,
+                        command,
+                        ..
+                    },
+            } => {
+                assert_eq!(name, "workspace gate");
+                assert!(require_pass);
+                assert_eq!(command, ["cargo", "test"]);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let report = Cli::try_parse_from([
+            "astragrid",
+            "dev",
+            "report",
+            "--output",
+            "ops/waseembot-devops/reports/devops.md",
+        ])
+        .unwrap();
+        match report.command.expect("command") {
+            Commands::Dev {
+                command: DevCommands::Report { output, limit, .. },
+            } => {
+                assert_eq!(
+                    output,
+                    Some(PathBuf::from("ops/waseembot-devops/reports/devops.md"))
+                );
+                assert_eq!(limit, 25);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let doctor = Cli::try_parse_from(["astragrid", "dev", "doctor"]).unwrap();
+        assert!(matches!(
+            doctor.command.expect("command"),
+            Commands::Dev {
+                command: DevCommands::Doctor { .. }
+            }
+        ));
     }
 
     #[test]
@@ -10721,8 +11036,25 @@ mod tests {
         let status = dev_status(&profile, 5).unwrap();
         assert_eq!(status["verified"], true);
         assert_eq!(status["events"], 2);
+        assert_eq!(status["devops_records"], 1);
+        assert_eq!(status["kind_counts"]["bug_found"], 1);
         assert_eq!(status["recent"][0]["summary"], "gateway test failed");
         assert_eq!(status["recent"][0]["kind"], "bug_found");
+
+        let doctor = run_dev_doctor(&profile).unwrap();
+        assert_eq!(doctor["verified"], true);
+
+        let output = root.join("data/reports/devops.md");
+        let report = write_dev_report(DevReportRequest {
+            profile,
+            output: Some(output.clone()),
+            limit: 10,
+        })
+        .unwrap();
+        assert_eq!(report["verified"], true);
+        let markdown = fs::read_to_string(output).unwrap();
+        assert!(markdown.contains("# AstraGrid DevOps Blackbox Report"));
+        assert!(markdown.contains("gateway test failed"));
     }
 
     #[test]

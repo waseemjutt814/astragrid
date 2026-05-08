@@ -73,6 +73,35 @@ The record includes:
 
 The command is launched directly, not through a shell.
 
+For CI-style local gates, add `--require-pass`. AstraGrid still writes the signed failure record,
+then exits failed so the calling script can stop:
+
+```powershell
+.\target\release\astragrid.exe dev run --require-pass --profile ops\waseembot-devops\astragrid.profile.json --name "workspace gate" -- cargo test --workspace --offline
+```
+
+## Validate The Blackbox
+
+```powershell
+.\target\release\astragrid.exe dev doctor --profile ops\waseembot-devops\astragrid.profile.json
+```
+
+This checks the profile paths and verifies the ledger.
+
+## Export A Human Report
+
+```powershell
+.\target\release\astragrid.exe dev report --profile ops\waseembot-devops\astragrid.profile.json
+```
+
+By default, this writes:
+
+```text
+ops\waseembot-devops\data\reports\devops-blackbox.md
+```
+
+The report includes record counts, current Git snapshot, recent records, and latest failure detail.
+
 ## Check Status
 
 ```powershell
@@ -127,4 +156,3 @@ These items cannot be honestly completed without real infrastructure or credenti
 - real multi-site deployment drills
 
 The local DevOps Blackbox flow is real and usable now.
-

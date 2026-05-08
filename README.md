@@ -6,6 +6,7 @@ If you are new to the project, start with the plain-language manual:
 `docs/what-is-astragrid.md`.
 
 For the practical developer workflow, see `docs/devops-blackbox.md`.
+For the active product todo, see `docs/next-15-product-todo.md`.
 
 The current foundation is executable: an append-only mission ledger, hash-chain verification,
 encrypted local signing identities, trusted operator registry, SQLite indexing, GeoJSON feature
