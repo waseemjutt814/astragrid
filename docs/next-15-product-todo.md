@@ -17,10 +17,20 @@ hardware claim is marked complete until real infrastructure exists.
 
 ## Wave 2: Product Readiness Still To Build
 
-- [ ] Add a one-command local console launcher for DevOps profiles.
-- [ ] Add append-only task open/complete records for planned work.
-- [ ] Add report sections for attached artifact hashes.
-- [ ] Add backup and restore smoke commands scoped to DevOps profiles.
+- [x] Add a one-command local console launcher for DevOps profiles.
+- [x] Add append-only task open/complete records for planned work.
+- [x] Add report sections for attached artifact hashes.
+- [x] Add backup and restore smoke commands scoped to DevOps profiles.
 - [ ] Add a native operator console app shell.
 - [ ] Add real public installer lanes: MSI, winget, and Scoop.
 - [ ] Add real signed update channel and release signing operations.
+
+## Final External Gates
+
+The local Windows CLI package is ready to use. These public-product gates remain external and must
+not be marked complete without real credentials, signing infrastructure, and distribution channels:
+
+- Native operator console app shell.
+- MSI, winget, and Scoop publication.
+- Signed public binaries.
+- Remote signed update channel.

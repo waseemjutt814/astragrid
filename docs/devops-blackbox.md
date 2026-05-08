@@ -80,6 +80,27 @@ then exits failed so the calling script can stop:
 .\target\release\astragrid.exe dev run --require-pass --profile ops\waseembot-devops\astragrid.profile.json --name "workspace gate" -- cargo test --workspace --offline
 ```
 
+## Track A Project Task
+
+```powershell
+.\target\release\astragrid.exe dev task-open --profile ops\waseembot-devops\astragrid.profile.json --title "Fix gateway timeout" --detail "Vitest gate is hanging"
+.\target\release\astragrid.exe dev task-complete --profile ops\waseembot-devops\astragrid.profile.json --title "Fix gateway timeout" --detail "Gate is green"
+```
+
+Both commands write signed append-only records. They do not edit or delete old task records.
+
+## Open The Console In One Command
+
+```powershell
+.\target\release\astragrid.exe dev console --profile ops\waseembot-devops\astragrid.profile.json
+```
+
+For scripts, print the local URL without serving:
+
+```powershell
+.\target\release\astragrid.exe dev console --profile ops\waseembot-devops\astragrid.profile.json --print-only
+```
+
 ## Validate The Blackbox
 
 ```powershell
@@ -101,6 +122,21 @@ ops\waseembot-devops\data\reports\devops-blackbox.md
 ```
 
 The report includes record counts, current Git snapshot, recent records, and latest failure detail.
+It also lists attached artifact hashes, including files passed with `--artifact`.
+
+## Backup And Restore Check
+
+Create a sealed backup and record it:
+
+```powershell
+.\target\release\astragrid.exe dev backup --profile ops\waseembot-devops\astragrid.profile.json
+```
+
+Restore that backup into a check directory and run profile doctor on the restored copy:
+
+```powershell
+.\target\release\astragrid.exe dev restore-check --profile ops\waseembot-devops\astragrid.profile.json --input ops\waseembot-devops\data\backups\devops-backup-<timestamp>.agbackup
+```
 
 ## Check Status
 

@@ -7,6 +7,7 @@ If you are new to the project, start with the plain-language manual:
 
 For the practical developer workflow, see `docs/devops-blackbox.md`.
 For the active product todo, see `docs/next-15-product-todo.md`.
+For the final ready-to-use checklist, see `docs/ready-to-use-final-todo.md`.
 
 The current foundation is executable: an append-only mission ledger, hash-chain verification,
 encrypted local signing identities, trusted operator registry, SQLite indexing, GeoJSON feature

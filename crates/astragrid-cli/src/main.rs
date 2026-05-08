@@ -133,6 +133,10 @@ enum DevEventKind {
     BuildCompleted,
     ReleaseBuilt,
     Decision,
+    TaskOpened,
+    TaskCompleted,
+    BackupCreated,
+    RestoreChecked,
 }
 
 #[derive(Debug, Subcommand)]
@@ -179,6 +183,67 @@ enum DevCommands {
         require_pass: bool,
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+    /// Open a signed append-only project task.
+    TaskOpen {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        detail: Option<String>,
+        #[arg(long)]
+        artifact: Vec<PathBuf>,
+    },
+    /// Complete a signed append-only project task.
+    TaskComplete {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        detail: Option<String>,
+        #[arg(long)]
+        artifact: Vec<PathBuf>,
+    },
+    /// Serve or print the local DevOps operator console URL.
+    Console {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:17882")]
+        bind: String,
+        #[arg(long, default_value = "AstraGrid DevOps Blackbox")]
+        title: String,
+        #[arg(long, default_value_t = 5)]
+        refresh_seconds: u64,
+        #[arg(long)]
+        max_requests: Option<u32>,
+        #[arg(long, default_value_t = false)]
+        no_auth: bool,
+        #[arg(long, default_value_t = false)]
+        print_only: bool,
+    },
+    /// Create a sealed DevOps workspace backup and record it.
+    Backup {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+    },
+    /// Restore a sealed backup to a check directory and record the result.
+    RestoreCheck {
+        #[arg(long, default_value = "astragrid.profile.json")]
+        profile: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
+        #[arg(long, default_value_t = false)]
+        overwrite: bool,
     },
     /// Export an operator-readable DevOps Blackbox report.
     Report {
@@ -1981,6 +2046,69 @@ fn main() -> Result<()> {
                 detail,
                 require_pass,
                 command,
+            })?),
+            DevCommands::TaskOpen {
+                profile,
+                title,
+                detail,
+                artifact,
+            } => print_json(&record_dev_task(DevTaskRequest {
+                profile,
+                kind: DevEventKind::TaskOpened,
+                title,
+                detail,
+                artifacts: artifact,
+            })?),
+            DevCommands::TaskComplete {
+                profile,
+                title,
+                detail,
+                artifact,
+            } => print_json(&record_dev_task(DevTaskRequest {
+                profile,
+                kind: DevEventKind::TaskCompleted,
+                title,
+                detail,
+                artifacts: artifact,
+            })?),
+            DevCommands::Console {
+                profile,
+                bind,
+                title,
+                refresh_seconds,
+                max_requests,
+                no_auth,
+                print_only,
+            } => print_json(&run_dev_console(DevConsoleRequest {
+                profile,
+                bind,
+                title,
+                refresh_seconds,
+                max_requests,
+                no_auth,
+                print_only,
+            })?),
+            DevCommands::Backup {
+                profile,
+                output,
+                passphrase_file,
+            } => print_json(&run_dev_backup(DevBackupRequest {
+                profile,
+                output,
+                passphrase_file,
+            })?),
+            DevCommands::RestoreCheck {
+                profile,
+                input,
+                output_dir,
+                passphrase_file,
+                overwrite,
+            } => print_json(&run_dev_restore_check(DevRestoreCheckRequest {
+                profile,
+                input,
+                output_dir,
+                passphrase_file,
+                overwrite,
             })?),
             DevCommands::Report {
                 profile,
@@ -3948,6 +4076,38 @@ struct DevRunRequest {
     command: Vec<String>,
 }
 
+struct DevTaskRequest {
+    profile: PathBuf,
+    kind: DevEventKind,
+    title: String,
+    detail: Option<String>,
+    artifacts: Vec<PathBuf>,
+}
+
+struct DevConsoleRequest {
+    profile: PathBuf,
+    bind: String,
+    title: String,
+    refresh_seconds: u64,
+    max_requests: Option<u32>,
+    no_auth: bool,
+    print_only: bool,
+}
+
+struct DevBackupRequest {
+    profile: PathBuf,
+    output: Option<PathBuf>,
+    passphrase_file: Option<PathBuf>,
+}
+
+struct DevRestoreCheckRequest {
+    profile: PathBuf,
+    input: PathBuf,
+    output_dir: Option<PathBuf>,
+    passphrase_file: Option<PathBuf>,
+    overwrite: bool,
+}
+
 struct DevReportRequest {
     profile: PathBuf,
     output: Option<PathBuf>,
@@ -5508,6 +5668,10 @@ impl DevEventKind {
             DevEventKind::BuildCompleted => "build_completed",
             DevEventKind::ReleaseBuilt => "release_built",
             DevEventKind::Decision => "decision",
+            DevEventKind::TaskOpened => "task_opened",
+            DevEventKind::TaskCompleted => "task_completed",
+            DevEventKind::BackupCreated => "backup_created",
+            DevEventKind::RestoreChecked => "restore_checked",
         }
     }
 
@@ -5516,11 +5680,15 @@ impl DevEventKind {
             DevEventKind::BugFound | DevEventKind::TestsFailed => Priority::Critical,
             DevEventKind::FixStarted
             | DevEventKind::BuildCompleted
-            | DevEventKind::ReleaseBuilt => Priority::Elevated,
+            | DevEventKind::ReleaseBuilt
+            | DevEventKind::TaskOpened
+            | DevEventKind::BackupCreated
+            | DevEventKind::RestoreChecked => Priority::Elevated,
             DevEventKind::Note
             | DevEventKind::FixCompleted
             | DevEventKind::TestsPassed
-            | DevEventKind::Decision => Priority::Routine,
+            | DevEventKind::Decision
+            | DevEventKind::TaskCompleted => Priority::Routine,
         }
     }
 }
@@ -5660,6 +5828,149 @@ fn run_dev_command(request: DevRunRequest) -> Result<Value> {
         );
     }
     Ok(report)
+}
+
+fn record_dev_task(request: DevTaskRequest) -> Result<Value> {
+    let state = match request.kind {
+        DevEventKind::TaskOpened => "open",
+        DevEventKind::TaskCompleted => "completed",
+        _ => bail!("unsupported DevOps task kind"),
+    };
+    let artifacts = collect_dev_artifacts(&request.artifacts)?;
+    let payload = json!({
+        "schema": 1,
+        "source": "astragrid-devops-blackbox",
+        "kind": request.kind.as_str(),
+        "summary": format!("Task {}: {}", state, request.title),
+        "detail": request.detail,
+        "status": state,
+        "task": {
+            "title": request.title,
+            "state": state,
+        },
+        "artifacts": artifacts,
+        "git": dev_git_snapshot(),
+    });
+    append_dev_payload(&request.profile, request.kind, payload)
+}
+
+fn run_dev_console(request: DevConsoleRequest) -> Result<Value> {
+    let workspace = load_dev_workspace(&request.profile)?;
+    let token_path = workspace.root.join("data/operator-console.token");
+    let auth_token = if request.no_auth {
+        None
+    } else {
+        Some(ensure_dev_console_token(&token_path)?)
+    };
+    let url = match auth_token.as_deref() {
+        Some(token) => format!("http://{}/console.html?token={token}", request.bind),
+        None => format!("http://{}/console.html", request.bind),
+    };
+    if request.print_only {
+        return Ok(json!({
+            "profile": request.profile,
+            "bind": request.bind,
+            "url": url,
+            "auth": if auth_token.is_some() { "token" } else { "disabled" },
+            "token_file": if auth_token.is_some() { Some(token_path) } else { None },
+            "served": false,
+        }));
+    }
+    let artifacts = resolve_ui_serve_artifacts(Some(&request.profile), None, None, None, None)?;
+    let served = serve_operator_console(UiServeRequest {
+        profile: Some(request.profile),
+        ledger: artifacts.ledger,
+        bind: request.bind,
+        title: request.title,
+        db: artifacts.db,
+        approvals: artifacts.approvals,
+        peer_queue: artifacts.peer_queue,
+        evidence_bundle: Vec::new(),
+        map_href: None,
+        refresh_seconds: request.refresh_seconds,
+        auth_token,
+        max_requests: request.max_requests,
+    })?;
+    Ok(json!({
+        "url": url,
+        "token_file": if request.no_auth { None } else { Some(token_path) },
+        "served": served,
+    }))
+}
+
+fn run_dev_backup(request: DevBackupRequest) -> Result<Value> {
+    let workspace = load_dev_workspace(&request.profile)?;
+    let output = request.output.unwrap_or_else(|| {
+        workspace.root.join("data/backups").join(format!(
+            "devops-backup-{}.agbackup",
+            OffsetDateTime::now_utc().unix_timestamp()
+        ))
+    });
+    let passphrase_file = request
+        .passphrase_file
+        .unwrap_or_else(|| workspace.passphrase_file.clone());
+    let backup = write_workspace_backup(BackupRequest {
+        profile: request.profile.clone(),
+        output: output.clone(),
+        passphrase_file,
+    })?;
+    let payload = json!({
+        "schema": 1,
+        "source": "astragrid-devops-blackbox",
+        "kind": DevEventKind::BackupCreated.as_str(),
+        "summary": format!("Backup created: {}", output.display()),
+        "detail": "Sealed DevOps workspace backup was created.",
+        "status": "created",
+        "backup": backup,
+        "artifacts": collect_dev_artifacts(std::slice::from_ref(&output))?,
+        "git": dev_git_snapshot(),
+    });
+    let record = append_dev_payload(&request.profile, DevEventKind::BackupCreated, payload)?;
+    Ok(json!({
+        "output": output,
+        "record": record,
+    }))
+}
+
+fn run_dev_restore_check(request: DevRestoreCheckRequest) -> Result<Value> {
+    let workspace = load_dev_workspace(&request.profile)?;
+    let output_dir = request.output_dir.unwrap_or_else(|| {
+        workspace.root.join("data/backups").join(format!(
+            "restore-check-{}",
+            OffsetDateTime::now_utc().unix_timestamp()
+        ))
+    });
+    let passphrase_file = request
+        .passphrase_file
+        .unwrap_or_else(|| workspace.passphrase_file.clone());
+    let restore = restore_workspace_backup(RestoreRequest {
+        input: request.input.clone(),
+        output_dir: output_dir.clone(),
+        passphrase_file,
+        overwrite: request.overwrite,
+    })?;
+    let restored_profile = output_dir.join("astragrid.profile.json");
+    let doctor = run_profile_doctor(&restored_profile)?;
+    let healthy = doctor["healthy"].as_bool().unwrap_or(false);
+    let payload = json!({
+        "schema": 1,
+        "source": "astragrid-devops-blackbox",
+        "kind": DevEventKind::RestoreChecked.as_str(),
+        "summary": format!("Restore check {}: {}", if healthy { "passed" } else { "failed" }, request.input.display()),
+        "detail": "Sealed backup was restored into a check directory and validated with profile doctor.",
+        "status": if healthy { "passed" } else { "failed" },
+        "restore": restore,
+        "restored_profile": restored_profile,
+        "profile_doctor": doctor,
+        "git": dev_git_snapshot(),
+    });
+    let record = append_dev_payload(&request.profile, DevEventKind::RestoreChecked, payload)?;
+    Ok(json!({
+        "input": request.input,
+        "output_dir": output_dir,
+        "healthy": healthy,
+        "record": record,
+    }))
 }
 
 fn dev_status(profile_path: &PathBuf, limit: usize) -> Result<Value> {
@@ -5803,11 +6114,22 @@ fn render_dev_report(
         .collect::<Vec<_>>();
     let mut kind_counts = BTreeMap::<String, usize>::new();
     let mut status_counts = BTreeMap::<String, usize>::new();
+    let mut artifact_rows = Vec::<Value>::new();
     for event in &devops_events {
         let kind = dev_event_field(event, "kind").unwrap_or("unknown");
         *kind_counts.entry(kind.to_owned()).or_default() += 1;
         if let Some(status) = dev_event_field(event, "status") {
             *status_counts.entry(status.to_owned()).or_default() += 1;
+        }
+        if let Some(artifacts) = event.payload.get("artifacts").and_then(Value::as_array) {
+            for artifact in artifacts {
+                artifact_rows.push(json!({
+                    "sequence": event.sequence,
+                    "path": artifact.get("path").and_then(Value::as_str).unwrap_or("--"),
+                    "sha256": artifact.get("sha256").and_then(Value::as_str).unwrap_or("--"),
+                    "bytes": artifact.get("bytes").and_then(Value::as_u64),
+                }));
+            }
         }
     }
 
@@ -5879,6 +6201,28 @@ fn render_dev_report(
         )?;
     }
 
+    writeln!(&mut markdown)?;
+    writeln!(&mut markdown, "## Attached Artifacts")?;
+    if artifact_rows.is_empty() {
+        writeln!(
+            &mut markdown,
+            "- No artifact hashes are attached to the selected records."
+        )?;
+    } else {
+        writeln!(&mut markdown, "| Seq | Path | SHA-256 | Bytes |")?;
+        writeln!(&mut markdown, "| --- | --- | --- | --- |")?;
+        for artifact in artifact_rows.iter().rev().take(limit) {
+            writeln!(
+                &mut markdown,
+                "| {} | {} | `{}` | `{}` |",
+                artifact["sequence"],
+                markdown_cell(artifact["path"].as_str().unwrap_or("--")),
+                short_hash(artifact["sha256"].as_str().unwrap_or("--")),
+                artifact["bytes"].as_u64().map_or(0, |value| value),
+            )?;
+        }
+    }
+
     if let Some(failure) = devops_events.iter().rev().find(|event| {
         dev_event_field(event, "status")
             .is_some_and(|status| status == "failed" || status == "spawn_failed")
@@ -5939,6 +6283,20 @@ fn short_hash(hash: &str) -> &str {
 
 fn markdown_cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
+}
+
+fn ensure_dev_console_token(path: &PathBuf) -> Result<String> {
+    let existing = fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_owned());
+    if let Some(token) = existing.filter(|value| !value.is_empty()) {
+        return Ok(token);
+    }
+    let mut bytes = [0_u8; 24];
+    OsRng.fill_bytes(&mut bytes);
+    let token = hex::encode(bytes);
+    write_text_file(path, &format!("{token}\n"))?;
+    Ok(token)
 }
 
 fn infer_dev_run_kind(name: &str, success: bool) -> DevEventKind {
@@ -8861,22 +9219,25 @@ mod tests {
     use tempfile::{NamedTempFile, tempdir};
 
     use super::{
-        ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands, DevCommands,
-        DevEventKind, DevInitRequest, DevRecordRequest, DevReportRequest, DevicePairingRequest,
-        DoctorCommands, FederationDaemonRequest, FirstRunRequest, GeoCommands, IdentityCommands,
-        NetCommands, OpsBundleRequest, OpsCommands, PeerQueueCommands, PeerQueueWorkerRequest,
-        PolicyPackCommands, ProvenanceCommands, ReadinessGateRequest, RecommendCommands,
-        RegistryQuorumChangeKind, RegistryQuorumProposalRequest, ReleaseCustodyPackRequest,
-        ReleaseEvidencePackRequest, RestoreRequest, RotateOperatorRequest, SetupCommands,
-        SyncCommands, TeamAppendRequest, TeamSessionIssueRequest, UiCommands, VaultAppendRequest,
-        VaultCommands, WorkerWatchdogRequest, WorkspaceProfile, acceptance_scenario,
+        ArtifactRetentionRequest, BackupRequest, Cli, Commands, DashboardCommands,
+        DevBackupRequest, DevCommands, DevConsoleRequest, DevEventKind, DevInitRequest,
+        DevRecordRequest, DevReportRequest, DevRestoreCheckRequest, DevTaskRequest,
+        DevicePairingRequest, DoctorCommands, FederationDaemonRequest, FirstRunRequest,
+        GeoCommands, IdentityCommands, NetCommands, OpsBundleRequest, OpsCommands,
+        PeerQueueCommands, PeerQueueWorkerRequest, PolicyPackCommands, ProvenanceCommands,
+        ReadinessGateRequest, RecommendCommands, RegistryQuorumChangeKind,
+        RegistryQuorumProposalRequest, ReleaseCustodyPackRequest, ReleaseEvidencePackRequest,
+        RestoreRequest, RotateOperatorRequest, SetupCommands, SyncCommands, TeamAppendRequest,
+        TeamSessionIssueRequest, UiCommands, VaultAppendRequest, VaultCommands,
+        WorkerWatchdogRequest, WorkspaceProfile, acceptance_scenario,
         apply_registry_quorum_proposal, authorize_team_action, build_registry_trust_bundle,
         create_device_pairing, create_registry_quorum_proposal, default_signature_output_path,
         dev_status, evaluate_policy_pack_file, export_ops_bundle, http_request_path, http_response,
         import_registry_trust_bundle, inject_meta_refresh, issue_team_session, read_json_file,
-        read_payload, record_dev_event, render_acceptance_script, render_default_launcher,
-        resolve_operator_console_auth_token, resolve_ui_serve_artifacts, restore_workspace_backup,
-        rotate_operator_key, run_artifact_retention, run_dev_doctor, run_dev_init,
+        read_payload, record_dev_event, record_dev_task, render_acceptance_script,
+        render_default_launcher, resolve_operator_console_auth_token, resolve_ui_serve_artifacts,
+        restore_workspace_backup, rotate_operator_key, run_artifact_retention, run_dev_backup,
+        run_dev_console, run_dev_doctor, run_dev_init, run_dev_restore_check,
         run_federation_daemon, run_first_run_setup, run_peer_queue_worker, run_profile_doctor,
         run_readiness_gate, run_worker_watchdog, sha256_file_hex, sign_registry_quorum_proposal,
         team_append_signed, vault_append, vault_init, vault_tail, vault_verify,
@@ -9357,6 +9718,55 @@ mod tests {
             doctor.command.expect("command"),
             Commands::Dev {
                 command: DevCommands::Doctor { .. }
+            }
+        ));
+
+        let task = Cli::try_parse_from([
+            "astragrid",
+            "dev",
+            "task-open",
+            "--title",
+            "Ship installer smoke",
+        ])
+        .unwrap();
+        assert!(matches!(
+            task.command.expect("command"),
+            Commands::Dev {
+                command: DevCommands::TaskOpen { .. }
+            }
+        ));
+
+        let console = Cli::try_parse_from(["astragrid", "dev", "console", "--print-only"]).unwrap();
+        assert!(matches!(
+            console.command.expect("command"),
+            Commands::Dev {
+                command: DevCommands::Console {
+                    print_only: true,
+                    ..
+                }
+            }
+        ));
+
+        let backup = Cli::try_parse_from(["astragrid", "dev", "backup"]).unwrap();
+        assert!(matches!(
+            backup.command.expect("command"),
+            Commands::Dev {
+                command: DevCommands::Backup { .. }
+            }
+        ));
+
+        let restore = Cli::try_parse_from([
+            "astragrid",
+            "dev",
+            "restore-check",
+            "--input",
+            "ops/waseembot-devops/data/backups/test.agbackup",
+        ])
+        .unwrap();
+        assert!(matches!(
+            restore.command.expect("command"),
+            Commands::Dev {
+                command: DevCommands::RestoreCheck { .. }
             }
         ));
     }
@@ -11033,13 +11443,66 @@ mod tests {
         assert_eq!(record["recorded"], true);
         assert_eq!(record["summary"], "gateway test failed");
 
+        let artifact = root.join("artifact.txt");
+        fs::write(&artifact, "proof").unwrap();
+        let task = record_dev_task(DevTaskRequest {
+            profile: profile.clone(),
+            kind: DevEventKind::TaskOpened,
+            title: "fix gateway timeout".to_owned(),
+            detail: Some("track the repair as append-only work".to_owned()),
+            artifacts: vec![artifact.clone()],
+        })
+        .unwrap();
+        assert_eq!(task["recorded"], true);
+        assert_eq!(task["summary"], "Task open: fix gateway timeout");
+
+        let console = run_dev_console(DevConsoleRequest {
+            profile: profile.clone(),
+            bind: "127.0.0.1:17882".to_owned(),
+            title: "DevOps".to_owned(),
+            refresh_seconds: 0,
+            max_requests: None,
+            no_auth: false,
+            print_only: true,
+        })
+        .unwrap();
+        assert_eq!(console["served"], false);
+        assert!(
+            console["url"]
+                .as_str()
+                .unwrap()
+                .contains("/console.html?token=")
+        );
+
+        let backup_path = root.join("data/backups/test.agbackup");
+        let backup = run_dev_backup(DevBackupRequest {
+            profile: profile.clone(),
+            output: Some(backup_path.clone()),
+            passphrase_file: None,
+        })
+        .unwrap();
+        assert!(backup_path.exists());
+        assert_eq!(backup["record"]["recorded"], true);
+
+        let restore_dir = root.join("data/backups/restore-check");
+        let restore = run_dev_restore_check(DevRestoreCheckRequest {
+            profile: profile.clone(),
+            input: backup_path,
+            output_dir: Some(restore_dir),
+            passphrase_file: None,
+            overwrite: false,
+        })
+        .unwrap();
+        assert_eq!(restore["healthy"], true);
+
         let status = dev_status(&profile, 5).unwrap();
         assert_eq!(status["verified"], true);
-        assert_eq!(status["events"], 2);
-        assert_eq!(status["devops_records"], 1);
+        assert_eq!(status["events"], 5);
+        assert_eq!(status["devops_records"], 4);
         assert_eq!(status["kind_counts"]["bug_found"], 1);
-        assert_eq!(status["recent"][0]["summary"], "gateway test failed");
-        assert_eq!(status["recent"][0]["kind"], "bug_found");
+        assert_eq!(status["kind_counts"]["task_opened"], 1);
+        assert_eq!(status["kind_counts"]["backup_created"], 1);
+        assert_eq!(status["kind_counts"]["restore_checked"], 1);
 
         let doctor = run_dev_doctor(&profile).unwrap();
         assert_eq!(doctor["verified"], true);
@@ -11055,6 +11518,8 @@ mod tests {
         let markdown = fs::read_to_string(output).unwrap();
         assert!(markdown.contains("# AstraGrid DevOps Blackbox Report"));
         assert!(markdown.contains("gateway test failed"));
+        assert!(markdown.contains("## Attached Artifacts"));
+        assert!(markdown.contains("artifact.txt"));
     }
 
     #[test]
