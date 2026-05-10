@@ -1,6 +1,12 @@
 /target/
 /.tools/
 /.cache/
+/.env
+/.env.*
+!/.env.example
+/data/
+/ops/
+/secrets/
 /.idea/
 /.vscode/
 *.log
